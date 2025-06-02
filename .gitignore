@@ -4,3 +4,7 @@ weight/
 wandb/
 *.pth
 *.onnx
+*.mp4
+datasets/
+*.db
+outputs

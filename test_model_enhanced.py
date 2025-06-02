@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-DFINE Segmentation Video Processor
+Enhanced D-FINE Segmentation Video Testing Script
 
-A script to process a video using the trained DFINE segmentation model
-and visualize both person detections (bounding boxes) and body part segmentation.
+Tests the enhanced architecture model trained with the advanced training script.
+Processes video with both person detection and body part segmentation visualization.
 """
 
 import os
@@ -19,21 +19,21 @@ import torchvision.transforms as T
 from PIL import Image, ImageDraw
 import cv2
 
-# Add src to path to import our custom classes
+# Add src to path
 sys.path.append('src')
 
 def parse_args():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='DFINE Segmentation Video Processor')
+    parser = argparse.ArgumentParser(description='Enhanced D-FINE Segmentation Video Testing')
     parser.add_argument('-c', '--config', type=str, required=True,
                         help='Path to original DFINE configuration YAML')
     parser.add_argument('-m', '--model', type=str, default='outputs/dfine_segmentation_enhanced/best_model.pth',
-                        help='Path to trained segmentation model checkpoint')
+                        help='Path to enhanced segmentation model checkpoint')
     parser.add_argument('-i', '--input', type=str, required=True,
                         help='Path to input video')
-    parser.add_argument('-o', '--output', type=str, default='dfine_segmentation_result.mp4',
+    parser.add_argument('-o', '--output', type=str, default='enhanced_segmentation_result.mp4',
                         help='Path to output video')
-    parser.add_argument('-t', '--threshold', type=float, default=0.5,
+    parser.add_argument('-t', '--threshold', type=float, default=0.6,
                         help='Detection confidence threshold (default: 0.6)')
     parser.add_argument('--seg-alpha', type=float, default=0.6,
                         help='Segmentation overlay alpha (default: 0.6)')
@@ -52,27 +52,88 @@ def parse_args():
     return parser.parse_args()
 
 
-# Import our custom classes
+# Import core components
 from src.core import YAMLConfig
 
 
-class FPN(nn.Module):
-    """Feature Pyramid Network for multi-scale feature fusion"""
+class SimplifiedASPP(nn.Module):
+    """Simplified ASPP module - matches training architecture"""
+    
+    def __init__(self, in_channels, out_channels, dilations=[1, 6, 12]):
+        super().__init__()
+        
+        self.convs = nn.ModuleList()
+        for dilation in dilations:
+            if dilation == 1:
+                conv = nn.Conv2d(in_channels, out_channels//len(dilations), 1, bias=False)
+            else:
+                conv = nn.Conv2d(in_channels, out_channels//len(dilations), 3, 
+                               padding=dilation, dilation=dilation, bias=False)
+            self.convs.append(nn.Sequential(
+                conv, 
+                nn.BatchNorm2d(out_channels//len(dilations)), 
+                nn.ReLU(inplace=True)
+            ))
+        
+        # Global average pooling branch
+        self.global_pool = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, out_channels//len(dilations), 1, bias=False),
+            nn.BatchNorm2d(out_channels//len(dilations)),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Final projection
+        total_channels = out_channels//len(dilations) * (len(dilations) + 1)
+        self.project = nn.Sequential(
+            nn.Conv2d(total_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(0.1)
+        )
+    
+    def forward(self, x):
+        h, w = x.shape[-2:]
+        features = []
+        
+        # Apply dilated convolutions
+        for conv in self.convs:
+            features.append(conv(x))
+        
+        # Global pooling branch
+        global_feat = self.global_pool(x)
+        global_feat = F.interpolate(global_feat, size=(h, w), mode='bilinear', align_corners=False)
+        features.append(global_feat)
+        
+        # Combine and project
+        combined = torch.cat(features, dim=1)
+        return self.project(combined)
+
+
+class ImprovedFPN(nn.Module):
+    """Improved FPN - matches training architecture"""
     
     def __init__(self, in_channels_list, out_channels=256):
         super().__init__()
         
         # Lateral connections
         self.lateral_convs = nn.ModuleList([
-            nn.Conv2d(in_ch, out_channels, 1) 
+            nn.Conv2d(in_ch, out_channels, 1, bias=False) 
             for in_ch in in_channels_list
         ])
         
         # Output convolutions
         self.fpn_convs = nn.ModuleList([
-            nn.Conv2d(out_channels, out_channels, 3, padding=1)
+            nn.Sequential(
+                nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True)
+            )
             for _ in in_channels_list
         ])
+        
+        # Feature fusion weights
+        self.fusion_weights = nn.Parameter(torch.ones(len(in_channels_list)))
         
     def forward(self, features):
         # Build laterals
@@ -89,55 +150,91 @@ class FPN(nn.Module):
         # Apply final convs
         outputs = [conv(lateral) for conv, lateral in zip(self.fpn_convs, laterals)]
         
-        return outputs
+        # Weighted feature fusion
+        target_size = outputs[0].shape[-2:]
+        fused_features = []
+        
+        for i, feat in enumerate(outputs):
+            if feat.shape[-2:] != target_size:
+                feat = F.interpolate(feat, size=target_size, mode='bilinear', align_corners=False)
+            fused_features.append(feat * self.fusion_weights[i])
+        
+        # Return weighted fusion
+        return sum(fused_features)
 
 
-class BodyPartsSegmentationHead(nn.Module):
-    """Body Parts Segmentation Head"""
+class EnhancedSegmentationHead(nn.Module):
+    """Enhanced segmentation head - matches training architecture"""
     
     def __init__(self, in_channels_list, num_classes=7, feature_dim=256, dropout_rate=0.1):
         super().__init__()
         self.num_classes = num_classes
-        self.fpn = FPN(in_channels_list, feature_dim)
         
+        # Improved FPN
+        self.fpn = ImprovedFPN(in_channels_list, feature_dim)
+        
+        # Simplified ASPP for multi-scale context
+        self.aspp = SimplifiedASPP(feature_dim, feature_dim)
+        
+        # Enhanced decoder
         self.decoder = nn.Sequential(
-            nn.Conv2d(feature_dim, feature_dim, 3, padding=1),
+            nn.Conv2d(feature_dim, feature_dim, 3, padding=1, bias=False),
             nn.BatchNorm2d(feature_dim),
             nn.ReLU(inplace=True),
-            nn.Conv2d(feature_dim, feature_dim//2, 3, padding=1),
+            
+            nn.Conv2d(feature_dim, feature_dim//2, 3, padding=1, bias=False),
             nn.BatchNorm2d(feature_dim//2),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(dropout_rate) if dropout_rate > 0 else nn.Identity(),
+            
+            nn.Dropout2d(dropout_rate),
             nn.Conv2d(feature_dim//2, num_classes, 1)
         )
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
     
     def forward(self, features):
-        fpn_features = self.fpn(features)
-        final_feature = fpn_features[0]
-        seg_logits = self.decoder(final_feature)
+        # Multi-scale feature fusion
+        fused_feature = self.fpn(features)
+        
+        # Apply simplified ASPP
+        context_feature = self.aspp(fused_feature)
+        
+        # Generate segmentation
+        seg_logits = self.decoder(context_feature)
+        
         return seg_logits
 
 
-class DFineWithSegmentation(nn.Module):
-    """D-FINE with added body parts segmentation head"""
+class EnhancedDFineSegmentation(nn.Module):
+    """Enhanced D-FINE with segmentation - matches training architecture"""
     
-    def __init__(self, dfine_model, seg_head, freeze_detection=True):
+    def __init__(self, dfine_model, seg_head):
         super().__init__()
         self.dfine_model = dfine_model
         self.seg_head = seg_head
-        self.freeze_detection = freeze_detection
+        
+        # Set to eval mode for inference
+        self.eval()
     
-    def forward(self, x, targets=None):
+    def forward(self, x):
         # Get backbone features
         backbone_features = self.dfine_model.backbone(x)
         
         outputs = {}
         
         # Detection branch
-        if not self.training or not self.freeze_detection:
-            with torch.no_grad() if self.freeze_detection else torch.enable_grad():
-                det_outputs = self.dfine_model(x)
-                outputs.update(det_outputs)
+        det_outputs = self.dfine_model(x)
+        outputs.update(det_outputs)
         
         # Segmentation branch
         seg_logits = self.seg_head(backbone_features)
@@ -154,7 +251,7 @@ class DFineWithSegmentation(nn.Module):
 
 
 def get_actual_backbone_channels(model):
-    """Get actual backbone output channels by running a forward pass"""
+    """Get actual backbone output channels"""
     model.eval()
     dummy_input = torch.randn(1, 3, 640, 640)
     
@@ -165,9 +262,9 @@ def get_actual_backbone_channels(model):
     return actual_channels
 
 
-def load_segmentation_model(config_file, checkpoint_path, device):
-    """Load the trained segmentation model"""
-    print(f"Loading base D-FINE model from config: {config_file}")
+def load_enhanced_segmentation_model(config_file, checkpoint_path, device):
+    """Load the enhanced segmentation model"""
+    print(f"Loading enhanced D-FINE model from config: {config_file}")
     
     # Load base D-FINE model
     cfg = YAMLConfig(config_file)
@@ -177,29 +274,41 @@ def load_segmentation_model(config_file, checkpoint_path, device):
     actual_channels = get_actual_backbone_channels(base_model)
     print(f"Detected backbone channels: {actual_channels}")
     
-    # Create segmentation head
-    seg_head = BodyPartsSegmentationHead(
+    # Create enhanced segmentation head (matching training architecture)
+    seg_head = EnhancedSegmentationHead(
         in_channels_list=actual_channels,
         num_classes=7,
-        feature_dim=256
+        feature_dim=256,
+        dropout_rate=0.1
     )
     
-    # Create combined model
-    model = DFineWithSegmentation(
+    # Create enhanced combined model
+    model = EnhancedDFineSegmentation(
         dfine_model=base_model,
-        seg_head=seg_head,
-        freeze_detection=True
+        seg_head=seg_head
     )
     
-    # Load trained weights
-    print(f"Loading segmentation weights from: {checkpoint_path}")
+    # Load enhanced weights
+    print(f"Loading enhanced segmentation weights from: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+    
+    # Load the state dict
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    
+    if missing_keys:
+        print(f"⚠️  Missing keys: {len(missing_keys)}")
+    if unexpected_keys:
+        print(f"⚠️  Unexpected keys: {len(unexpected_keys)}")
     
     model = model.to(device)
     model.eval()
     
-    print(f"Segmentation model loaded successfully on {device}")
+    print(f"Enhanced segmentation model loaded successfully on {device}")
     return model
 
 
@@ -230,7 +339,7 @@ def get_body_part_names():
 
 
 def process_frame(model, frame_bgr, device, transforms_val, threshold=0.6):
-    """Process a single frame with the segmentation model"""
+    """Process a single frame with the enhanced segmentation model"""
     # Convert BGR to RGB and then to PIL
     rgb_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(rgb_frame)
@@ -340,7 +449,7 @@ def draw_detections_and_segmentation(pil_image, seg_pred, labels, boxes, scores,
                 draw.text((box[0] + 2, text_y_pos), text, fill="white")
     
     # Draw legend for body parts
-    draw_legend(draw, result_image.size)
+    #draw_legend(draw, result_image.size)
     
     # Draw segmentation info
     unique_parts = np.unique(seg_pred)
@@ -351,6 +460,10 @@ def draw_detections_and_segmentation(pil_image, seg_pred, labels, boxes, scores,
         parts_text = f"Body parts: {', '.join(active_parts)}"
         draw.text((10, result_image.size[1] - 30), parts_text, fill="white")
     
+    # Enhanced info display
+    info_text = f"Enhanced Model | People: {person_count} | Parts: {len(active_parts)}"
+    draw.text((10, 10), info_text, fill="white")
+    
     return result_image, person_count, len(active_parts)
 
 
@@ -360,7 +473,11 @@ def draw_legend(draw, image_size):
     names = get_body_part_names()
     
     legend_x = image_size[0] - 150
-    legend_y = 10
+    legend_y = 40  # Moved down to avoid overlap with info text
+    
+    # Draw legend background
+    draw.rectangle([legend_x - 5, legend_y - 5, image_size[0] - 5, legend_y + 150], 
+                  fill=(0, 0, 0, 128), outline="white")
     
     for i, (class_id, color) in enumerate(colors.items()):
         if class_id == 0:  # Skip background
@@ -389,7 +506,7 @@ def check_ffmpeg():
 
 def process_video(model, input_path, output_path, device, threshold, seg_alpha,
                  resize_factor, output_fps_target, crf, preset):
-    """Process video with segmentation model"""
+    """Process video with enhanced segmentation model"""
     
     if not check_ffmpeg():
         raise RuntimeError("ffmpeg is required for video output")
@@ -425,6 +542,7 @@ def process_video(model, input_path, output_path, device, threshold, seg_alpha,
     print(f"Input: {input_path} ({original_width}x{original_height} @ {original_fps:.2f} FPS)")
     print(f"Output: {output_path} ({output_width}x{output_height} @ {output_fps:.2f} FPS)")
     print(f"Device: {device}, Detection threshold: {threshold}, Seg alpha: {seg_alpha}")
+    print(f"Using ENHANCED architecture with ASPP and improved FPN")
 
     # Setup ffmpeg
     command = [
@@ -441,6 +559,7 @@ def process_video(model, input_path, output_path, device, threshold, seg_alpha,
     total_people = 0
     total_parts_detected = 0
     processing_start_time = time.time()
+    stdin_broken = False
 
     try:
         while True:
@@ -457,12 +576,12 @@ def process_video(model, input_path, output_path, device, threshold, seg_alpha,
             else:
                 frame_to_process = frame_bgr_original
 
-            # Process frame
+            # Process frame with enhanced model
             pil_image, seg_pred, labels, boxes, scores = process_frame(
                 model, frame_to_process, device, transforms_val, threshold
             )
             
-            # Draw results
+            # Draw results with enhanced visualization
             result_pil, person_count, parts_count = draw_detections_and_segmentation(
                 pil_image, seg_pred, labels, boxes, scores, threshold, seg_alpha
             )
@@ -481,9 +600,17 @@ def process_video(model, input_path, output_path, device, threshold, seg_alpha,
 
             # Write to ffmpeg
             try:
-                ffmpeg_process.stdin.write(output_frame_bgr.tobytes())
-            except (BrokenPipeError, IOError):
-                print("\nffmpeg stdin error")
+                if ffmpeg_process.stdin and not ffmpeg_process.stdin.closed:
+                    ffmpeg_process.stdin.write(output_frame_bgr.tobytes())
+                else:
+                    if not stdin_broken:
+                        print("\nffmpeg stdin closed")
+                    stdin_broken = True
+                    break
+            except (BrokenPipeError, IOError) as e:
+                if not stdin_broken:
+                    print(f"\nffmpeg stdin error: {e}")
+                stdin_broken = True
                 break
 
             frame_idx += 1
@@ -505,17 +632,15 @@ def process_video(model, input_path, output_path, device, threshold, seg_alpha,
 
     finally:
         cap.release()
-        sys.stdout.write("\n")  # Newline after progress updates
+        sys.stdout.write("\n")
         
         # Robust ffmpeg cleanup
-        stdin_broken = False
         if ffmpeg_process.stdin:
-            if not ffmpeg_process.stdin.closed:
+            if not ffmpeg_process.stdin.closed and not stdin_broken:
                 try:
                     ffmpeg_process.stdin.close()
                 except (BrokenPipeError, IOError) as e:
                     print(f"Error closing ffmpeg stdin: {e}")
-                    stdin_broken = True
         
         stdout_data, stderr_data = None, None
         try:
@@ -524,24 +649,12 @@ def process_video(model, input_path, output_path, device, threshold, seg_alpha,
             print("ffmpeg process timed out. Forcing termination.")
             ffmpeg_process.kill()
             stdout_data, stderr_data = ffmpeg_process.communicate()
-        except ValueError as e:  # Handle "flush of closed file"
+        except ValueError as e:
             print(f"ValueError during ffmpeg.communicate(): {e}")
-            print("This is expected when ffmpeg stdin was closed early. Checking process status...")
-            if ffmpeg_process.poll() is None:  # Still running
+            if ffmpeg_process.poll() is None:
                 ffmpeg_process.wait(timeout=5)
-            # Try to get any remaining output
-            if ffmpeg_process.stdout and not ffmpeg_process.stdout.closed:
-                try:
-                    stdout_data = ffmpeg_process.stdout.read()
-                except:
-                    pass
-            if ffmpeg_process.stderr and not ffmpeg_process.stderr.closed:
-                try:
-                    stderr_data = ffmpeg_process.stderr.read()
-                except:
-                    pass
         except Exception as e:
-            print(f"Unexpected error during ffmpeg.communicate(): {e}")
+            print(f"Error during ffmpeg.communicate(): {e}")
             if ffmpeg_process.poll() is None:
                 ffmpeg_process.kill()
                 ffmpeg_process.wait(timeout=5)
@@ -554,7 +667,6 @@ def process_video(model, input_path, output_path, device, threshold, seg_alpha,
         if frame_idx > 0:
             print(f"Average body parts per frame: {total_parts_detected/frame_idx:.1f}")
         
-        # Check results
         if ffmpeg_process.returncode is not None and ffmpeg_process.returncode == 0:
             print("ffmpeg process completed successfully.")
         elif ffmpeg_process.returncode is not None:
@@ -562,14 +674,9 @@ def process_video(model, input_path, output_path, device, threshold, seg_alpha,
         
         if os.path.exists(output_path):
             size_mb = os.path.getsize(output_path) / 1024 / 1024
-            print(f"✅ Output saved: {output_path} ({size_mb:.2f} MB)")
+            print(f"✅ Enhanced segmentation output saved: {output_path} ({size_mb:.2f} MB)")
         else:
             print(f"❌ Output file not found: {output_path}")
-        
-        if stderr_data:
-            stderr_str = stderr_data.decode(errors='ignore') if isinstance(stderr_data, bytes) else str(stderr_data)
-            if stderr_str.strip():  # Only print if there's actual content
-                print(f"ffmpeg stderr: {stderr_str}")
 
 
 def main():
@@ -588,7 +695,7 @@ def main():
         if not os.path.isfile(args.model):
             raise FileNotFoundError(f"Model checkpoint not found: {args.model}")
         
-        model = load_segmentation_model(args.config, args.model, device)
+        model = load_enhanced_segmentation_model(args.config, args.model, device)
         
         process_video(
             model=model, input_path=args.input, output_path=args.output,
@@ -597,7 +704,7 @@ def main():
             crf=args.crf, preset=args.preset
         )
         
-        print("\nProcessing complete!")
+        print("\n🎉 Enhanced segmentation processing complete!")
         
     except Exception as e:
         print(f"\nError: {e}")
