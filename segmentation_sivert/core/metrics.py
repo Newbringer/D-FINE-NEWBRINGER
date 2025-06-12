@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Core Metrics for DFINE Segmentation
-Evaluation metrics for segmentation performance
+Core Metrics for DFINE Segmentation - GPU Enhanced
+Evaluation metrics for segmentation performance with GPU optimizations
 """
 
 import torch
@@ -12,7 +12,7 @@ from collections import defaultdict
 
 
 class SegmentationMetrics:
-    """Comprehensive segmentation metrics calculation"""
+    """Comprehensive segmentation metrics calculation - GPU Enhanced"""
     
     def __init__(self, num_classes: int = 7, ignore_index: int = 255, class_names: Optional[List[str]] = None):
         self.num_classes = num_classes
@@ -25,16 +25,21 @@ class SegmentationMetrics:
                 'background', 'head', 'torso', 'arms', 'hands', 'legs', 'feet'
             ]
         
+        # Determine device
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
         self.reset()
     
     def reset(self):
-        """Reset all metrics"""
-        self.confusion_matrix = np.zeros((self.num_classes, self.num_classes))
-        self.pixel_counts = np.zeros(self.num_classes)
+        """Reset all metrics - GPU optimized"""
+        # Keep confusion matrix on GPU for speed
+        self.confusion_matrix = torch.zeros((self.num_classes, self.num_classes), 
+                                          dtype=torch.long, device=self.device)
+        self.pixel_counts = torch.zeros(self.num_classes, dtype=torch.long, device=self.device)
         self.total_pixels = 0
     
     def update(self, pred: torch.Tensor, target: torch.Tensor):
-        """Update metrics with new predictions and targets
+        """Update metrics with new predictions and targets - GPU OPTIMIZED
         
         Args:
             pred: Predicted logits [N, C, H, W] or class predictions [N, H, W]
@@ -44,29 +49,56 @@ class SegmentationMetrics:
         if pred.dim() == 4:  # [N, C, H, W]
             pred = torch.argmax(pred, dim=1)
         
-        # Flatten tensors
-        pred_flat = pred.flatten().cpu().numpy()
-        target_flat = target.flatten().cpu().numpy()
+        # Ensure tensors are on GPU
+        pred = pred.to(self.device)
+        target = target.to(self.device)
         
-        # Create mask for valid pixels
-        valid_mask = target_flat != self.ignore_index
-        pred_valid = pred_flat[valid_mask]
-        target_valid = target_flat[valid_mask]
+        # Create mask for valid pixels (GPU operation)
+        valid_mask = (target != self.ignore_index)
         
-        # Update confusion matrix
-        for i in range(len(pred_valid)):
-            if 0 <= target_valid[i] < self.num_classes and 0 <= pred_valid[i] < self.num_classes:
-                self.confusion_matrix[target_valid[i], pred_valid[i]] += 1
-                self.pixel_counts[target_valid[i]] += 1
-                self.total_pixels += 1
+        # Get valid predictions and targets (stay on GPU)
+        pred_valid = pred[valid_mask]
+        target_valid = target[valid_mask]
+        
+        # GPU-optimized confusion matrix update using bincount
+        # This replaces the SLOW Python loop!
+        n_valid = pred_valid.numel()
+        if n_valid > 0:
+            # Ensure values are within valid range
+            valid_pred_mask = (pred_valid >= 0) & (pred_valid < self.num_classes)
+            valid_target_mask = (target_valid >= 0) & (target_valid < self.num_classes)
+            final_mask = valid_pred_mask & valid_target_mask
+            
+            if final_mask.sum() > 0:
+                pred_final = pred_valid[final_mask]
+                target_final = target_valid[final_mask]
+                
+                # Create indices: target * num_classes + pred
+                indices = target_final * self.num_classes + pred_final
+                
+                # Vectorized confusion matrix update (GPU operation)
+                bincount = torch.bincount(indices, minlength=self.num_classes**2)
+                bincount = bincount.reshape(self.num_classes, self.num_classes)
+                
+                # Update confusion matrix and pixel counts (GPU operations)
+                self.confusion_matrix += bincount
+                
+                # Update pixel counts
+                pixel_bincount = torch.bincount(target_final, minlength=self.num_classes)
+                self.pixel_counts += pixel_bincount
+                
+                self.total_pixels += pred_final.numel()
     
     def compute_miou(self) -> float:
         """Compute mean Intersection over Union"""
+        # Convert to numpy for final computation (only transfer small matrix)
+        cm = self.confusion_matrix.cpu().numpy()
+        
         ious = []
         for i in range(self.num_classes):
-            true_positive = self.confusion_matrix[i, i]
-            false_positive = self.confusion_matrix[:, i].sum() - true_positive
-            false_negative = self.confusion_matrix[i, :].sum() - true_positive
+            true_positive = cm[i, i]
+            false_positive = cm[:, i].sum() - true_positive
+            false_negative = cm[i, :].sum() - true_positive
             
             union = true_positive + false_positive + false_negative
             if union > 0:
@@ -77,11 +109,13 @@ class SegmentationMetrics:
     
     def compute_class_iou(self) -> Dict[str, float]:
         """Compute per-class IoU"""
+        cm = self.confusion_matrix.cpu().numpy()
+        
         class_ious = {}
         for i in range(self.num_classes):
-            true_positive = self.confusion_matrix[i, i]
-            false_positive = self.confusion_matrix[:, i].sum() - true_positive
-            false_negative = self.confusion_matrix[i, :].sum() - true_positive
+            true_positive = cm[i, i]
+            false_positive = cm[:, i].sum() - true_positive
+            false_negative = cm[i, :].sum() - true_positive
             
             union = true_positive + false_positive + false_negative
             if union > 0:
@@ -95,15 +129,18 @@ class SegmentationMetrics:
     
     def compute_pixel_accuracy(self) -> float:
         """Compute overall pixel accuracy"""
-        correct_pixels = np.diag(self.confusion_matrix).sum()
+        cm = self.confusion_matrix.cpu().numpy()
+        correct_pixels = np.diag(cm).sum()
         return correct_pixels / self.total_pixels if self.total_pixels > 0 else 0.0
     
     def compute_class_accuracy(self) -> Dict[str, float]:
         """Compute per-class accuracy (recall)"""
+        cm = self.confusion_matrix.cpu().numpy()
+        
         class_accuracies = {}
         for i in range(self.num_classes):
-            true_positive = self.confusion_matrix[i, i]
-            total_true = self.confusion_matrix[i, :].sum()
+            true_positive = cm[i, i]
+            total_true = cm[i, :].sum()
             
             if total_true > 0:
                 accuracy = true_positive / total_true
@@ -116,10 +153,12 @@ class SegmentationMetrics:
     
     def compute_class_precision(self) -> Dict[str, float]:
         """Compute per-class precision"""
+        cm = self.confusion_matrix.cpu().numpy()
+        
         class_precisions = {}
         for i in range(self.num_classes):
-            true_positive = self.confusion_matrix[i, i]
-            total_pred = self.confusion_matrix[:, i].sum()
+            true_positive = cm[i, i]
+            total_pred = cm[:, i].sum()
             
             if total_pred > 0:
                 precision = true_positive / total_pred
@@ -152,7 +191,8 @@ class SegmentationMetrics:
     def compute_frequency_weighted_iou(self) -> float:
         """Compute frequency weighted IoU"""
         class_ious = list(self.compute_class_iou().values())
-        class_frequencies = self.pixel_counts / self.total_pixels if self.total_pixels > 0 else np.zeros(self.num_classes)
+        pixel_counts = self.pixel_counts.cpu().numpy()
+        class_frequencies = pixel_counts / self.total_pixels if self.total_pixels > 0 else np.zeros(self.num_classes)
         
         fwiou = 0.0
         for i in range(self.num_classes):
@@ -201,7 +241,7 @@ class SegmentationMetrics:
 
 
 def compute_miou(pred: torch.Tensor, target: torch.Tensor, num_classes: int = 7, ignore_index: int = 255) -> float:
-    """Quick mIoU computation for training loops"""
+    """Quick mIoU computation for training loops - Already GPU optimized"""
     if pred.dim() == 4:
         pred = torch.argmax(pred, dim=1)
     
@@ -226,7 +266,7 @@ def compute_miou(pred: torch.Tensor, target: torch.Tensor, num_classes: int = 7,
 
 
 def compute_pixel_accuracy(pred: torch.Tensor, target: torch.Tensor, ignore_index: int = 255) -> float:
-    """Quick pixel accuracy computation"""
+    """Quick pixel accuracy computation - Already GPU optimized"""
     if pred.dim() == 4:
         pred = torch.argmax(pred, dim=1)
     
@@ -242,7 +282,7 @@ def compute_pixel_accuracy(pred: torch.Tensor, target: torch.Tensor, ignore_inde
 
 
 def compute_class_iou(pred: torch.Tensor, target: torch.Tensor, num_classes: int = 7, ignore_index: int = 255) -> List[float]:
-    """Compute per-class IoU"""
+    """Compute per-class IoU - Already GPU optimized"""
     if pred.dim() == 4:
         pred = torch.argmax(pred, dim=1)
     
@@ -269,7 +309,7 @@ def compute_class_iou(pred: torch.Tensor, target: torch.Tensor, num_classes: int
 
 
 class BatchMetricsTracker:
-    """Track metrics across training batches"""
+    """Track metrics across training batches - Already fast"""
     
     def __init__(self, num_classes: int = 7, ignore_index: int = 255):
         self.num_classes = num_classes
@@ -309,7 +349,7 @@ class BatchMetricsTracker:
         }
 
 
-# Factory function
+# Factory function - SAME NAME
 def create_metrics_tracker(num_classes: int = 7, ignore_index: int = 255, class_names: Optional[List[str]] = None) -> SegmentationMetrics:
-    """Create metrics tracker"""
+    """Create metrics tracker - GPU enhanced"""
     return SegmentationMetrics(num_classes, ignore_index, class_names)
