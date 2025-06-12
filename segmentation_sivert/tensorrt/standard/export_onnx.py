@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-DFINE Segmentation Model ONNX Exporter
+DFINE Segmentation Model ONNX Exporter - FIXED VERSION
 
 Converts a DFINE + Segmentation PyTorch model to ONNX format for TensorRT conversion.
+Now properly loads hyperparameters from checkpoint to match training configuration.
+
 Usage: 
-    python tensorrt/export_segmentation_onnx.py -c configs/dfine_hgnetv2_x_obj2coco.yml -r /path/to/segmentation_model.pth --original-weights /path/to/original_dfine.pth
+    python export_onnx.py -r outputs/dfine_segmentation_optuna/best_model.pth --original-weights models/dfine_x_obj2coco.pth
 """
 
 import os
@@ -20,14 +22,14 @@ sys.path.append('src')
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='DFINE Segmentation Model ONNX Exporter')
-    parser.add_argument('-c', '--config', type=str, required=True,
+    parser.add_argument('-c', '--config', type=str, default="configs/dfine_hgnetv2_x_obj2coco.yml",
                         help='Path to original DFINE configuration YAML')
     parser.add_argument('-r', '--resume', type=str, required=True,
                         help='Path to trained segmentation model weights (.pth)')
-    parser.add_argument('--original-weights', type=str, required=True,
+    parser.add_argument('--original-weights', default="models/dfine_x_obj2coco.pth", type=str,
                         help='Path to original DFINE model weights (.pth)')
-    parser.add_argument('-o', '--output', type=str, default=None,
-                        help='Path to save the ONNX model (default: model.pth -> model.onnx)')
+    parser.add_argument('-o', '--output', type=str, default="model.onnx",
+                        help='Path to save the ONNX model (default: auto-generated from resume path)')
     parser.add_argument('--check', action='store_true', default=True,
                         help='Check the exported ONNX model')
     parser.add_argument('--simplify', action='store_true', default=True,
@@ -255,30 +257,61 @@ def load_pretrained_dfine(config_path, checkpoint_path):
     return model
 
 
-def create_segmentation_model(config_path, original_checkpoint_path, seg_checkpoint_path, num_classes=7):
-    """Create segmentation model and load trained weights"""
+def load_hyperparameters_from_checkpoint(checkpoint_path):
+    """Load hyperparameters from saved checkpoint"""
+    print(f"📚 Loading hyperparameters from {checkpoint_path}")
     
-    # Load original DFINE model
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Extract hyperparameters
+    if 'hyperparameters' in checkpoint:
+        hyperparams = checkpoint['hyperparameters']
+        print(f"✅ Found saved hyperparameters:")
+        for key, value in hyperparams.items():
+            print(f"   {key}: {value}")
+        return hyperparams
+    else:
+        print("⚠️  No hyperparameters found in checkpoint, using defaults")
+        return {
+            'feature_dim': 256,
+            'dropout_rate': 0.1
+        }
+
+
+def create_segmentation_model(config_path, original_checkpoint_path, seg_checkpoint_path, num_classes=7):
+    """Create segmentation model and load trained weights with correct hyperparameters"""
+    
+    # STEP 1: Load hyperparameters from the segmentation checkpoint
+    hyperparams = load_hyperparameters_from_checkpoint(seg_checkpoint_path)
+    
+    # Extract the specific hyperparameters we need
+    feature_dim = hyperparams.get('feature_dim', 256)
+    dropout_rate = hyperparams.get('dropout_rate', 0.1)
+    
+    print(f"🏗️  Creating model with feature_dim={feature_dim}, dropout_rate={dropout_rate}")
+    
+    # STEP 2: Load original DFINE model
     det_model = load_pretrained_dfine(config_path, original_checkpoint_path)
     backbone_channels = get_actual_backbone_channels(det_model)
     
     print(f"🏗️  Using backbone channels: {backbone_channels}")
     
-    # Create segmentation head
+    # STEP 3: Create segmentation head with CORRECT hyperparameters
     seg_head = EnhancedSegmentationHead(
         in_channels_list=backbone_channels,
         num_classes=num_classes,
-        feature_dim=256
+        feature_dim=feature_dim,  # Use the saved hyperparameter!
+        dropout_rate=dropout_rate  # Use the saved hyperparameter!
     )
     
-    # Create combined model
+    # STEP 4: Create combined model
     model = DFineWithSegmentation(
         dfine_model=det_model,
         seg_head=seg_head,
         freeze_detection=False  # Don't freeze during inference
     )
     
-    # Load trained segmentation weights
+    # STEP 5: Load trained segmentation weights
     print(f"📚 Loading trained segmentation weights from {seg_checkpoint_path}")
     checkpoint = torch.load(seg_checkpoint_path, map_location='cpu')
     
@@ -287,17 +320,18 @@ def create_segmentation_model(config_path, original_checkpoint_path, seg_checkpo
     else:
         state_dict = checkpoint
     
+    # Now the model architecture should match the checkpoint!
     model.load_state_dict(state_dict, strict=True)
-    print(f"✅ Loaded trained segmentation model")
+    print(f"✅ Loaded trained segmentation model successfully!")
     
-    return model
+    return model, hyperparams
 
 
 def export_onnx(args):
     """Export the segmentation model to ONNX format"""
     
-    # Create the segmentation model
-    model = create_segmentation_model(
+    # Create the segmentation model with correct hyperparameters
+    model, hyperparams = create_segmentation_model(
         args.config, 
         args.original_weights, 
         args.resume, 
@@ -370,9 +404,14 @@ def export_onnx(args):
     if args.output:
         output_file = args.output
     else:
-        output_file = args.resume.replace(".pth", "_segmentation.onnx")
+        # Create a more descriptive filename with hyperparameters
+        base_name = args.resume.replace(".pth", "")
+        feature_dim = hyperparams.get('feature_dim', 256)
+        output_file = f"{base_name}_segmentation_fd{feature_dim}.onnx"
     
     print(f"Exporting segmentation model to ONNX: {output_file}")
+    print(f"Model hyperparameters: feature_dim={hyperparams.get('feature_dim', 256)}, dropout_rate={hyperparams.get('dropout_rate', 0.1)}")
+    
     torch.onnx.export(
         wrapper_model,
         (data, size),

@@ -8,3 +8,5 @@ wandb/
 datasets/
 *.db
 outputs
+*.engine
+venv/

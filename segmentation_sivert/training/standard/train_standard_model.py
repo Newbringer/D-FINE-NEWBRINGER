@@ -249,7 +249,7 @@ class ImprovedFPN(nn.Module):
 class EnhancedSegmentationHead(nn.Module):
     """Enhanced but stable segmentation head"""
     
-    def __init__(self, in_channels_list, num_classes=7, feature_dim=256, dropout_rate=0.1):
+    def __init__(self, in_channels_list, num_classes=7, feature_dim=384, dropout_rate=0.1):
         super().__init__()
         self.num_classes = num_classes
         
