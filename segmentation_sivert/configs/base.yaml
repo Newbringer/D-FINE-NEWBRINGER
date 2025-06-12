@@ -11,22 +11,22 @@ dataset:
 
 # DFINE Model Configuration
 dfine:
-  config_path: "../base_dfine/dfine_hgnetv2_x_obj2coco.yml"
-  checkpoint_path: "../base_dfine/dfine_x_obj2coco.pth"
+  config_path: "base_dfine/dfine_hgnetv2_x_obj2coco.yml"
+  checkpoint_path: "base_dfine/dfine_x_obj2coco.pth"
 
 # Training Configuration
 training:
   batch_size: 8
   epochs: 250
-  learning_rate: 5e-4
-  weight_decay: 1e-4
+  learning_rate: 0.0005  # 5e-4 in decimal
+  weight_decay: 0.0001  # 1e-4 in decimal
   
   # Scheduler settings
   scheduler:
     type: "cosine_warmup"
     T_0: 15
     T_mult: 2
-    eta_min: 1e-6
+    eta_min: 0.000001  # 1e-6 in decimal
   
   # Optimization settings
   gradient_clipping: 1.0

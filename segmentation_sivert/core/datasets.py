@@ -205,7 +205,7 @@ class PascalPersonPartsDataset(BaseSegmentationDataset):
         return image, mask
 
 
-class MultiScaleDataset(BaseSegmentationDataset):
+class MultiScaleDataset(torch.utils.data.Dataset):
     """Multi-scale training dataset wrapper"""
     
     def __init__(self, base_dataset: BaseSegmentationDataset, scales: List[float] = None):

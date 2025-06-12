@@ -149,10 +149,15 @@ class BaseCombinedModel(nn.Module, ABC):
     
     def unfreeze_detection(self):
         """Unfreeze detection model parameters"""
-        for param in self.dfine_model.parameters():
-            param.requires_grad = True
+        unfrozen_count = 0
+        for name, param in self.dfine_model.named_parameters():
+            # Only unfreeze parameters that can require gradients (floating point and complex dtypes)
+            if param.dtype.is_floating_point or param.dtype.is_complex:
+                param.requires_grad = True
+                unfrozen_count += 1
+        
         self.freeze_detection = False
-        print("🔓 Unfrozen detection components")
+        print(f"🔓 Unfrozen detection components: {unfrozen_count} parameters")
     
     def forward(self, x: torch.Tensor, targets: Optional[Any] = None) -> Dict[str, torch.Tensor]:
         """Forward pass through combined model"""

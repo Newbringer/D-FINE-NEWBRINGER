@@ -1,8 +1,8 @@
 # Lightweight Configuration for DFINE Segmentation
-# Optimized for speed and low memory usage - ideal for edge devices and gun AI chips
+# Optimized for speed and low memory usage - ideal for edge devices and mobile
 
 # Inherit from base configuration
-base: "configs/base.yaml"
+base: "base.yaml"
 
 # Model Tier
 tier: "lightweight"
@@ -34,7 +34,7 @@ model:
 training:
   batch_size: 12  # Can use larger batch due to smaller model
   epochs: 60  # Fewer epochs due to simpler model
-  learning_rate: 7e-4  # Slightly higher LR
+  learning_rate: 0.0007  # 7e-4 in decimal  # Slightly higher LR
   
   # Lightweight tier specific settings
   multi_scale_training: false  # Disabled for speed
@@ -67,6 +67,16 @@ targets:
     max_gpu_mb: 2000  # Very low memory usage
     max_model_mb: 50   # Small model size
 
+# Output Configuration
+output:
+  base_dir: "outputs/lightweight"
+  
+# Logging Configuration
+logging:
+  wandb:
+    project: "dfine-lightweight-segmentation"
+    tags: ["lightweight", "edge", "fast"]
+
 # TensorRT Configuration for Lightweight Tier
 tensorrt:
   fp16: true
@@ -84,16 +94,6 @@ tensorrt:
     mode: "pascal"  # Pascal-only for consistency
     max_images: 300  # Fewer calibration images
 
-# Output Configuration
-output:
-  base_dir: "outputs/lightweight"
-  
-# Logging Configuration
-logging:
-  wandb:
-    project: "dfine-lightweight-segmentation"
-    tags: ["lightweight", "edge", "fast"]
-
 # Platform-specific optimizations
 platform:
   edge_devices:
@@ -106,18 +106,4 @@ platform:
     ios: true
   
   embedded:
-    gun_ai_chip: true
     custom_asic: true
-
-# Comments for clarity
-comments: |
-  Lightweight tier configuration provides:
-  - Maximum speed and efficiency
-  - Minimal memory usage
-  - Suitable for edge devices and AI chips in guns
-  - Target: ~60% mIoU at 60+ FPS
-  - Ultra-low latency: <16ms
-  - Model size: <50MB
-  - GPU memory: <2GB
-  - Uses depthwise separable convolutions
-  - Optimized for embedded deployment

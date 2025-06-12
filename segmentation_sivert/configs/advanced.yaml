@@ -2,7 +2,7 @@
 # Maximum accuracy and robustness - ideal for high-end GPU setups
 
 # Inherit from base configuration
-base: "configs/base.yaml"
+base: "base.yaml"
 
 # Model Tier
 tier: "advanced"
@@ -37,7 +37,7 @@ model:
 training:
   batch_size: 4  # Smaller batch due to larger model
   epochs: 120  # More epochs for convergence
-  learning_rate: 3e-4  # Lower LR for stability
+  learning_rate: 0.0003  # 3e-4 in decimal  # Lower LR for stability
   
   # Advanced tier specific settings
   multi_scale_training: true
@@ -96,6 +96,20 @@ targets:
     max_gpu_mb: 8000  # High memory usage acceptable
     max_model_mb: 400  # Large model size
 
+# Output Configuration
+output:
+  base_dir: "outputs/advanced"
+  save_intermediate: true  # Save auxiliary outputs
+  
+# Logging Configuration
+logging:
+  wandb:
+    project: "dfine-advanced-segmentation"
+    tags: ["advanced", "high-accuracy", "robust"]
+  
+  detailed_metrics: true
+  save_attention_maps: true
+
 # TensorRT Configuration for Advanced Tier
 tensorrt:
   fp16: true
@@ -117,20 +131,6 @@ tensorrt:
     mode: "mixed"  # Mixed dataset for robustness
     max_images: 1000  # More calibration images
     pascal_ratio: 0.6  # Balanced mix
-
-# Output Configuration
-output:
-  base_dir: "outputs/advanced"
-  save_intermediate: true  # Save auxiliary outputs
-  
-# Logging Configuration
-logging:
-  wandb:
-    project: "dfine-advanced-segmentation"
-    tags: ["advanced", "high-accuracy", "robust"]
-  
-  detailed_metrics: true
-  save_attention_maps: true
 
 # Platform Configuration
 platform:
@@ -167,17 +167,3 @@ features:
     uncertainty_estimation: true
     failure_detection: true
     confidence_calibration: true
-
-# Comments for clarity
-comments: |
-  Advanced tier configuration provides:
-  - Maximum accuracy and robustness
-  - State-of-the-art attention mechanisms
-  - Deep supervision and boundary refinement
-  - Multi-scale processing
-  - Target: ~80% mIoU at 15+ FPS
-  - Large model: ~400MB
-  - High GPU memory: ~8GB
-  - Suitable for high-end workstations and servers
-  - Best for research and high-quality applications
-  - Incorporates latest segmentation techniques
