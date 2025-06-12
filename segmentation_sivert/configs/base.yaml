@@ -17,7 +17,7 @@ dfine:
 # Training Configuration
 training:
   batch_size: 8
-  epochs: 80
+  epochs: 250
   learning_rate: 5e-4
   weight_decay: 1e-4
   
