@@ -1,0 +1,100 @@
+# Standard Configuration for DFINE Segmentation
+# Balanced performance and accuracy
+
+# Inherit from base configuration
+base: "configs/base.yaml"
+
+# Model Tier
+tier: "standard"
+
+# Model-specific Configuration
+model:
+  segmentation_head:
+    type: "standard"
+    feature_dim: 256
+    dropout_rate: 0.1
+    
+    # FPN settings
+    fpn:
+      enable_fusion_weights: true
+      
+    # ASPP settings  
+    aspp:
+      dilations: [1, 6, 12]
+      enable_global_pool: true
+      
+    # Decoder settings
+    decoder:
+      stages: 3
+      enable_batch_norm: true
+
+# Training Configuration Overrides
+training:
+  batch_size: 24
+  epochs: 250
+  learning_rate: 5e-4
+  
+  # Standard tier specific settings
+  multi_scale_training: true
+  augmentation_strength: "medium"
+  
+  # Unfreezing strategy
+  unfreeze_epoch: 35
+  backbone_lr_factor: 0.1
+
+# Loss Configuration for Standard Tier
+loss:
+  type: "standard"
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  dice_weight: 0.4
+  ce_weight: 0.2
+  boundary_weight: 0.3
+
+# Performance Targets
+targets:
+  accuracy:
+    miou: 0.70
+    pixel_accuracy: 0.85
+  
+  speed:
+    min_fps: 30  # On RTX 3080
+    max_latency_ms: 35
+  
+  memory:
+    max_gpu_mb: 4000
+    max_model_mb: 100
+
+# TensorRT Configuration for Standard Tier
+tensorrt:
+  fp16: true
+  int8: true
+  workspace_gb: 4
+  
+  # Standard tier optimization
+  optimization_level: 3
+  enable_dla: false
+  
+  calibration:
+    mode: "mixed"
+    max_images: 500
+    pascal_ratio: 0.7
+
+# Output Configuration
+output:
+  base_dir: "outputs/standard"
+  
+# Logging Configuration
+logging:
+  wandb:
+    project: "dfine-standard-segmentation"
+    tags: ["standard", "balanced"]
+
+# Comments for clarity
+comments: |
+  Standard tier configuration provides:
+  - Balanced accuracy and speed
+  - Good for general purpose applications
+  - Target: ~70% mIoU at 30+ FPS
+  - Memory efficient: <4GB GPU, <100MB model
+  - Suitable for edge deployment with moderate compute
