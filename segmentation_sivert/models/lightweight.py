@@ -115,8 +115,12 @@ class UltraLightweightASPP(nn.Module):
             nn.ReLU6(inplace=True)
         )
         
-        # Single dilated convolution
-        self.branch2 = DepthwiseSeparableConv(in_channels, branch_channels, 3, padding=6)
+        # Single dilated convolution (standard conv with dilation)
+        self.branch2 = nn.Sequential(
+            nn.Conv2d(in_channels, branch_channels, 3, padding=6, dilation=6, bias=False),
+            nn.BatchNorm2d(branch_channels),
+            nn.ReLU6(inplace=True)
+        )
         
         # Global average pooling
         self.branch3 = nn.Sequential(

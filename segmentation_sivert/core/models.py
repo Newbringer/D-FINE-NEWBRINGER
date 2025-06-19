@@ -161,19 +161,41 @@ class BaseCombinedModel(nn.Module, ABC):
     
     def forward(self, x: torch.Tensor, targets: Optional[Any] = None) -> Dict[str, torch.Tensor]:
         """Forward pass through combined model"""
-        # Get backbone features
+        # Get backbone features (these will have gradients if backbone is unfrozen)
         backbone_features = self.dfine_model.backbone(x)
         
         outputs = {}
         
-        # Detection branch (frozen during training)
-        if not self.training or not self.freeze_detection:
-            with torch.no_grad() if self.freeze_detection else torch.enable_grad():
-                det_outputs = self.dfine_model(x)
-                outputs.update(det_outputs)
+        # Detection branch - always keep in inference mode for segmentation training
+        # Even when backbone is unfrozen, we don't want to trigger detection training
+        with torch.no_grad():
+            # Temporarily set to eval mode to avoid denoising training
+            was_training = self.dfine_model.training
+            if was_training:
+                self.dfine_model.eval()
+            
+            det_outputs = self.dfine_model(x)
+            outputs.update(det_outputs)
+            
+            # Restore training mode
+            if was_training:
+                self.dfine_model.train()
         
-        # Segmentation branch
-        seg_logits = self.seg_head(backbone_features)
+        # Segmentation branch (uses backbone_features which may have gradients)
+        seg_outputs = self.seg_head(backbone_features)
+        
+        # Handle different segmentation head output formats
+        if isinstance(seg_outputs, tuple):
+            # Advanced head returns (main_logits, aux1_logits, aux2_logits, boundary_map)
+            seg_logits = seg_outputs[0]  # Use main output
+            # Store auxiliary outputs for potential use in loss calculation
+            if len(seg_outputs) >= 4:
+                outputs['aux1_logits'] = seg_outputs[1]
+                outputs['aux2_logits'] = seg_outputs[2] 
+                outputs['boundary_map'] = seg_outputs[3]
+        else:
+            # Standard/lightweight heads return single tensor
+            seg_logits = seg_outputs
         
         # Upsample to input resolution
         seg_logits = F.interpolate(

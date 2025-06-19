@@ -43,7 +43,7 @@ model:
 
 # Training Configuration (overrides base)
 training:
-  batch_size: 24
+  batch_size: 16
   epochs: 150
   learning_rate: 0.0005  # 5e-4 in decimal
   weight_decay: 0.0001  # 1e-4 in decimal
@@ -58,7 +58,7 @@ training:
   # Optimization settings
   gradient_clipping: 1.0
   freeze_detection: true
-  unfreeze_epoch: 20
+  unfreeze_epoch: 35
   backbone_lr_factor: 0.1
   
   # Standard tier specific settings

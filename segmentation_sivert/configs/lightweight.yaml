@@ -33,15 +33,15 @@ model:
 # Training Configuration Overrides
 training:
   batch_size: 12  # Can use larger batch due to smaller model
-  epochs: 60  # Fewer epochs due to simpler model
+  epochs: 150  # Fewer epochs due to simpler model
   learning_rate: 0.0007  # 7e-4 in decimal  # Slightly higher LR
   
   # Lightweight tier specific settings
-  multi_scale_training: false  # Disabled for speed
-  augmentation_strength: "light"
+  multi_scale_training: True  # Disabled for speed
+  augmentation_strength: "strong"
   
   # Simplified unfreezing strategy
-  unfreeze_epoch: 25
+  unfreeze_epoch: 30
   backbone_lr_factor: 0.1
 
 # Loss Configuration for Lightweight Tier
