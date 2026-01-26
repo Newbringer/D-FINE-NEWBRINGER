@@ -25,7 +25,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Enhanced D-FINE Segmentation Video Testing')
     parser.add_argument('-c', '--config', type=str, default="configs/dfine_hgnetv2_x_obj2coco.yml",
                         help='Path to original DFINE configuration YAML')
-    parser.add_argument('-m', '--model', type=str, default='outputs/dfine_segmentation_robust/best_model.pth',
+    parser.add_argument('-m', '--model', type=str, default='dfine_0.73.pth',
                         help='Path to enhanced segmentation model checkpoint')
     parser.add_argument('-i', '--input', type=str, required=True,
                         help='Path to input video')
