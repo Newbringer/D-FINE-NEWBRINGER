@@ -10,3 +10,4 @@ datasets/
 outputs
 *.engine
 venv/
+*.jpg
