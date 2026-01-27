@@ -11,7 +11,7 @@ import sys
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset, Subset
 import argparse
 from pathlib import Path
 from tqdm import tqdm
@@ -245,16 +245,22 @@ def freeze_for_glass_training(model, unfreeze_last_n_decoder_layers=2):
             frozen_params += param.numel()
             continue
         
-        # PARTIALLY UNFREEZE: Last N decoder layers
-        if 'decoder' in name and unfreeze_last_n_decoder_layers > 0:
-            # Check if it's in the last N layers
+        # PARTIALLY UNFREEZE: Last N decoder layers (transformer + heads)
+        if unfreeze_last_n_decoder_layers > 0:
             import re
-            layer_match = re.search(r'dec_score_head\.(\d+)', name)
-            if layer_match:
-                layer_idx = int(layer_match.group(1))
-                # Assuming 6 decoder layers (0-5), unfreeze last N
-                if layer_idx >= (6 - unfreeze_last_n_decoder_layers):
-                    should_train = True
+            layer_patterns = [
+                r'decoder\.decoder\.layers\.(\d+)',
+                r'decoder\.lqe_layers\.(\d+)',
+                r'decoder\.dec_bbox_head\.(\d+)',
+                r'decoder\.dec_score_head\.(\d+)',
+            ]
+            for pattern in layer_patterns:
+                layer_match = re.search(pattern, name)
+                if layer_match:
+                    layer_idx = int(layer_match.group(1))
+                    if layer_idx >= (6 - unfreeze_last_n_decoder_layers):
+                        should_train = True
+                        break
         
         # ALWAYS TRAIN: Classification heads (to learn class 80)
         if any(key in name for key in ['class_embed', 'score_head', 'cls']):
@@ -451,13 +457,13 @@ def main():
                        help='Glass wall dataset directory')
     parser.add_argument('--coco-data', default='../data/coco',
                        help='COCO dataset path for retention')
-    parser.add_argument('--coco-ratio', type=float, default=0.3,
+    parser.add_argument('--coco-ratio', type=float, default=1.0,
                        help='Ratio of COCO samples (0.3 = 30%% COCO, 70%% glass)')
     parser.add_argument('--coco-max-images', type=int, default=500,
                        help='Max COCO images to use')
     
     # Training
-    parser.add_argument('--epochs', type=int, default=50,
+    parser.add_argument('--epochs', type=int, default=100,
                        help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=4,
                        help='Batch size')
@@ -467,12 +473,14 @@ def main():
                        help='Number of decoder layers to unfreeze (0-6)')
     
     # Options
-    parser.add_argument('--augment', action='store_true', default=False,
+    parser.add_argument('--augment', action='store_true', default=True,
                        help='Enable light augmentation')
-    parser.add_argument('--strong-augment', action='store_true', default=False,
+    parser.add_argument('--strong-augment', action='store_true', default=True,
                        help='Enable STRONG augmentation (recommended for glass)')
-    parser.add_argument('--overfit', action='store_true', default=False,
+    parser.add_argument('--overfit', action='store_true', default=True,
                        help='Overfit mode: train/val on same data')
+    parser.add_argument('--augment-multiplier', type=int, default=3,
+                       help='Repeat glass dataset N times with forced augmentation')
     
     # Output
     parser.add_argument('--output-dir', default='../outputs/glass_detection_segmentation')
@@ -523,17 +531,21 @@ def main():
     
     # Load glass dataset
     if args.overfit:
-        glass_train = GlassWallDataset(args.glass_data, split='all', class_id=80, 
-                                      augment=args.augment)
+        glass_train = GlassWallDataset(args.glass_data, split='all', class_id=80,
+                                      augment=args.augment,
+                                      augment_multiplier=args.augment_multiplier)
         glass_val = GlassWallDataset(args.glass_data, split='all', class_id=80, 
                                     augment=False)
     else:
-        glass_train = GlassWallDataset(args.glass_data, split='train', class_id=80, 
-                                      augment=args.augment)
+        glass_train = GlassWallDataset(args.glass_data, split='train', class_id=80,
+                                      augment=args.augment,
+                                      augment_multiplier=args.augment_multiplier)
         glass_val = GlassWallDataset(args.glass_data, split='val', class_id=80, 
                                     augment=False)
     
     print(f"   ✅ Glass dataset loaded: {len(glass_train)} train, {len(glass_val)} val")
+    split_label = 'all' if args.overfit else 'train'
+    print(f"   🔁 Augment multiplier: {args.augment_multiplier} ({split_label} split)")
     
     # Test glass dataset
     try:
@@ -559,8 +571,18 @@ def main():
                 coco_dataset = None
             
             if coco_dataset:
-                train_dataset = MixedDataset(glass_train, coco_dataset, glass_ratio=1-args.coco_ratio)
-                print(f"   ✅ Using mixed dataset with COCO retention")
+                coco_count = int(len(glass_train) * args.coco_ratio)
+                coco_count = min(coco_count, len(coco_dataset))
+                if coco_count > 0:
+                    coco_subset = Subset(coco_dataset, range(coco_count))
+                    train_dataset = ConcatDataset([glass_train, coco_subset])
+                    print(
+                        f"   ✅ Using mixed dataset: {len(glass_train)} glass + "
+                        f"{coco_count} COCO (ratio {args.coco_ratio:.2f} of glass)"
+                    )
+                else:
+                    train_dataset = glass_train
+                    print("   ✅ Using glass-only dataset (COCO count is 0)")
             else:
                 train_dataset = glass_train
         except Exception as e:
@@ -594,6 +616,7 @@ def main():
     print(f"   Val samples: {len(glass_val)}")
     print(f"   Train batches: {len(train_loader)}")
     print(f"   Val batches: {len(val_loader)}")
+    print(f"   Expected train batches: {(len(train_dataset) + args.batch_size - 1) // args.batch_size}")
     
     # Optimizer
     optimizer = optim.AdamW(

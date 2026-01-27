@@ -7,6 +7,70 @@ Defines the segmentation head and combined model structure.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import logging
+
+from src.core import YAMLConfig
+
+logger = logging.getLogger(__name__)
+
+
+def _infer_feature_dim(state_dict):
+    for key in (
+        "seg_head.fpn.lateral_convs.0.weight",
+        "seg_head.aspp.project.0.weight",
+        "seg_head.decoder.0.weight",
+    ):
+        if key in state_dict:
+            return state_dict[key].shape[0]
+    return None
+
+
+def _infer_num_classes(state_dict):
+    candidate_keys = [
+        "dfine_model.decoder.enc_score_head.weight",
+        "dfine_model.decoder.dec_score_head.0.weight",
+        "dfine_model.decoder.class_embed.weight",
+        "decoder.enc_score_head.weight",
+        "decoder.dec_score_head.0.weight",
+        "decoder.class_embed.weight",
+    ]
+    for key in candidate_keys:
+        if key in state_dict:
+            return state_dict[key].shape[0]
+    return None
+
+
+def _expand_dfine_to_81_classes(model):
+    """Expand detection head from 80 to 81 classes."""
+    for name, module in model.named_modules():
+        if any(key in name.lower() for key in ["class_embed", "cls", "score"]):
+            if isinstance(module, nn.Linear) and module.out_features == 80:
+                parent_name = ".".join(name.split(".")[:-1])
+                child_name = name.split(".")[-1]
+                parent = model.get_submodule(parent_name) if parent_name else model
+                new_module = nn.Linear(module.in_features, 81)
+                with torch.no_grad():
+                    new_module.weight[:80] = module.weight
+                    if module.bias is not None:
+                        new_module.bias[:80] = module.bias
+                    nn.init.normal_(new_module.weight[80:], mean=0, std=0.01)
+                    if new_module.bias is not None:
+                        nn.init.zeros_(new_module.bias[80:])
+                setattr(parent, child_name, new_module)
+            elif isinstance(module, nn.Embedding) and module.num_embeddings == 81:
+                parent_name = ".".join(name.split(".")[:-1])
+                child_name = name.split(".")[-1]
+                parent = model.get_submodule(parent_name) if parent_name else model
+                new_module = nn.Embedding(82, module.embedding_dim, padding_idx=81)
+                with torch.no_grad():
+                    new_module.weight[:81] = module.weight
+                    nn.init.normal_(new_module.weight[81:82], mean=0, std=0.01)
+                setattr(parent, child_name, new_module)
+    if hasattr(model, "num_classes"):
+        model.num_classes = 81
+    if hasattr(model, "decoder") and hasattr(model.decoder, "num_classes"):
+        model.decoder.num_classes = 81
+    return model
 
 
 class ASPP(nn.Module):
@@ -231,3 +295,172 @@ class DFineWithSegmentation(nn.Module):
         outputs['segmentation'] = seg_logits
         
         return outputs
+
+class SegmentationModelWrapper(nn.Module):
+    """Wrapper model for ONNX export with proper postprocessing"""
+    
+    def __init__(self, seg_model, postprocessor):
+        super().__init__()
+        self.seg_model = seg_model.eval()
+        self.postprocessor = postprocessor
+        
+    def forward(self, images, orig_target_sizes):
+        # Run the segmentation model
+        outputs = self.seg_model(images)
+        
+        # Extract detection outputs for postprocessing
+        det_outputs = {k: v for k, v in outputs.items() if k != 'segmentation'}
+        
+        # Process detection outputs
+        processed_det = self.postprocessor(det_outputs, orig_target_sizes=orig_target_sizes)
+        
+        # Get segmentation outputs
+        seg_logits = outputs['segmentation']
+        
+        # Apply softmax to get probabilities
+        seg_probs = torch.softmax(seg_logits, dim=1)
+        
+        # Get segmentation predictions
+        seg_preds = torch.argmax(seg_logits, dim=1)
+        
+        return processed_det[0], processed_det[1], processed_det[2], seg_probs, seg_preds
+
+
+def create_segmentation_model(config_path, original_weights_path, checkpoint_path, hyperparams, model_size="x"):
+    """
+    Create segmentation model with exact architecture from working exporter.
+    
+    Args:
+        config_path: Path to D-FINE config
+        original_weights_path: Path to original D-FINE weights  
+        checkpoint_path: Path to trained segmentation checkpoint
+        hyperparams: Hyperparameters extracted from checkpoint
+        model_size: Model size (x, l, m, s, n)
+        
+    Returns:
+        Complete segmentation model
+    """
+    logger.info("Creating segmentation model...")
+    logger.info(f"Config: {config_path}")
+    logger.info(f"Original weights: {original_weights_path}")
+    logger.info(f"Model size: {model_size}")
+    
+    # Load original DFINE model
+    logger.info("Loading DFINE configuration...")
+    cfg = YAMLConfig(str(config_path))
+    dfine_model = cfg.model
+    
+    # Load original weights
+    logger.info("Loading original DFINE weights...")
+    original_checkpoint = torch.load(original_weights_path, map_location='cpu', weights_only=False)
+    
+    if 'ema' in original_checkpoint and 'module' in original_checkpoint['ema']:
+        state_dict = original_checkpoint['ema']['module']
+    elif 'model' in original_checkpoint:
+        state_dict = original_checkpoint['model']
+    else:
+        state_dict = original_checkpoint
+    
+    dfine_model.load_state_dict(state_dict, strict=False)
+    
+    # Get backbone channels dynamically
+    logger.info("Analyzing backbone architecture...")
+    dfine_model.eval()
+    dummy_input = torch.randn(1, 3, 640, 640)
+    
+    with torch.no_grad():
+        backbone_features = dfine_model.backbone(dummy_input)
+    
+    backbone_channels = [feat.shape[1] for feat in backbone_features]
+    logger.info(f"Detected backbone channels: {backbone_channels}")
+    
+    # Load trained weights (for architecture inference)
+    logger.info(f"Loading trained segmentation weights from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+    
+    inferred_feature_dim = _infer_feature_dim(state_dict)
+    if inferred_feature_dim:
+        hyperparams = dict(hyperparams)
+        hyperparams['feature_dim'] = inferred_feature_dim
+        logger.info(f"Using feature_dim from checkpoint: {inferred_feature_dim}")
+    
+    inferred_num_classes = _infer_num_classes(state_dict)
+    if inferred_num_classes == 81:
+        logger.info("Expanding DFINE to 81 classes to match checkpoint")
+        dfine_model = _expand_dfine_to_81_classes(dfine_model)
+    
+    # Create segmentation head with EXACT architecture from working exporter
+    logger.info("Creating segmentation head...")
+    seg_head = SegmentationHead(
+        in_channels_list=backbone_channels,
+        num_classes=7,  # Pascal Person Parts
+        feature_dim=hyperparams.get('feature_dim', 256),
+        dropout_rate=hyperparams.get('dropout_rate', 0.1)
+    )
+    
+    # Create combined model with EXACT architecture from working exporter
+    logger.info("Creating combined DFINE segmentation model...")
+    model = DFineWithSegmentation(
+        dfine_model=dfine_model,
+        seg_head=seg_head,
+        freeze_detection=True  # Match working exporter
+    )
+    
+    # Load state dict
+    try:
+        model.load_state_dict(state_dict, strict=True)
+        logger.info(f"Loaded trained segmentation model successfully")
+    except RuntimeError as e:
+        logger.warning(f"Strict loading failed: {e}")
+        # Try non-strict loading
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        logger.info(f"Loaded with non-strict mode")
+        if missing_keys:
+            logger.info(f"   Missing keys: {len(missing_keys)}")
+        if unexpected_keys:
+            logger.info(f"   Unexpected keys: {len(unexpected_keys)}")
+    
+    logger.info("Segmentation model creation completed")
+    return model
+
+
+def create_wrapper_model(seg_model, config_path=None, num_classes=None):
+    """Create wrapper model for ONNX export with proper postprocessing"""
+    logger.info("Creating wrapper model for ONNX export...")
+    postprocessor = None
+    
+    if config_path:
+        try:
+            cfg = YAMLConfig(str(config_path))
+            postprocessor = cfg.postprocessor.deploy()
+            logger.info("Loaded postprocessor from config")
+        except Exception as e:
+            logger.warning(f"Could not load postprocessor: {e}")
+            logger.info("Using identity postprocessor")
+            postprocessor = lambda x, y: (x.get('pred_logits', torch.empty(0)), 
+                                         x.get('pred_boxes', torch.empty(0)), 
+                                         torch.empty(0))
+    else:
+        logger.info("No config provided, using identity postprocessor")
+        postprocessor = lambda x, y: (x.get('pred_logits', torch.empty(0)), 
+                                     x.get('pred_boxes', torch.empty(0)), 
+                                     torch.empty(0))
+    
+    # Ensure postprocessor has correct class count
+    if num_classes is None:
+        if hasattr(seg_model, "dfine_model") and hasattr(seg_model.dfine_model, "num_classes"):
+            num_classes = seg_model.dfine_model.num_classes
+        elif hasattr(seg_model, "num_classes"):
+            num_classes = seg_model.num_classes
+    if num_classes is not None and hasattr(postprocessor, "num_classes"):
+        postprocessor.num_classes = int(num_classes)
+        logger.info(f"Postprocessor num_classes set to {postprocessor.num_classes}")
+
+    wrapper = SegmentationModelWrapper(seg_model, postprocessor)
+    logger.info("Wrapper model created successfully")
+    return wrapper

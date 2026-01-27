@@ -16,7 +16,8 @@ import random
 class GlassWallDataset(Dataset):
     """Glass wall detection dataset"""
     
-    def __init__(self, root_dir, split='train', class_id=80, image_size=640, augment=True):
+    def __init__(self, root_dir, split='train', class_id=80, image_size=640,
+                 augment=True, augment_multiplier=1):
         """
         Args:
             root_dir: Root directory with images and _annotations.coco.json
@@ -29,7 +30,8 @@ class GlassWallDataset(Dataset):
         self.class_id = class_id
         self.image_size = image_size
         self.split = split
-        self.augment = augment and (split == 'train')  # Only augment training data
+        self.augment = augment and (split in ['train', 'all'])  # Only augment training data
+        self.augment_multiplier = max(1, int(augment_multiplier)) if self.augment else 1
         
         # Load COCO annotations
         json_path = self.root_dir / '_annotations.coco.json'
@@ -58,13 +60,23 @@ class GlassWallDataset(Dataset):
                 self.img_to_anns[img_id] = []
             self.img_to_anns[img_id].append(ann)
         
-        print(f"   Loaded {len(self.images)} {split} images")
+        uses_multiplier = self.split in ['train', 'all']
+        total = len(self.images) * self.augment_multiplier if uses_multiplier else len(self.images)
+        if uses_multiplier and self.augment_multiplier > 1:
+            print(f"   Loaded {len(self.images)} {split} images (effective {total}, x{self.augment_multiplier} aug)")
+        else:
+            print(f"   Loaded {len(self.images)} {split} images (effective {total})")
     
     def __len__(self):
+        if self.split in ['train', 'all']:
+            return len(self.images) * self.augment_multiplier
         return len(self.images)
     
     def __getitem__(self, idx):
-        img_info = self.images[idx]
+        base_len = len(self.images)
+        base_idx = idx % base_len
+        force_augment = self.augment and idx >= base_len
+        img_info = self.images[base_idx]
         img_id = img_info['id']
         
         # Load image
@@ -76,35 +88,52 @@ class GlassWallDataset(Dataset):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         orig_h, orig_w = image.shape[:2]
         
-        # Apply augmentation BEFORE resize for better quality
-        if self.augment:
-            image = self._apply_augmentation(image)
-        
-        # Resize image
-        image = cv2.resize(image, (self.image_size, self.image_size))
-        
         # Get annotations
         anns = self.img_to_anns.get(img_id, [])
         
-        # Convert annotations
+        # Convert annotations to absolute xyxy boxes
         boxes = []
         labels = []
         
         for ann in anns:
             x, y, w, h = ann['bbox']
             
-            # Convert COCO xywh (pixels) -> normalized cxcywh (0-1)
-            cx = (x + w / 2) / orig_w
-            cy = (y + h / 2) / orig_h
-            w_norm = w / orig_w
-            h_norm = h / orig_h
+            x1 = max(0.0, min(float(x), orig_w - 1.0))
+            y1 = max(0.0, min(float(y), orig_h - 1.0))
+            x2 = max(0.0, min(float(x + w), orig_w - 1.0))
+            y2 = max(0.0, min(float(y + h), orig_h - 1.0))
             
-            boxes.append([cx, cy, w_norm, h_norm])
-            labels.append(self.class_id)  # All glass annotations get class 80
+            if x2 > x1 and y2 > y1:
+                boxes.append([x1, y1, x2, y2])
+                labels.append(self.class_id)  # All glass annotations get class 80
+        
+        # Apply augmentation BEFORE resize for better quality
+        if self.augment or force_augment:
+            image, boxes, labels = self._apply_augmentation(image, boxes, labels)
+        
+        # Use augmented image size for normalization
+        aug_h, aug_w = image.shape[:2]
+        
+        # Resize image
+        image = cv2.resize(image, (self.image_size, self.image_size))
+        
+        # Convert to normalized cxcywh after augmentation
+        
+        if boxes:
+            boxes = np.array(boxes, dtype=np.float32)
+            cx = (boxes[:, 0] + boxes[:, 2]) * 0.5 / aug_w
+            cy = (boxes[:, 1] + boxes[:, 3]) * 0.5 / aug_h
+            w_norm = (boxes[:, 2] - boxes[:, 0]) / aug_w
+            h_norm = (boxes[:, 3] - boxes[:, 1]) / aug_h
+            boxes = np.stack([cx, cy, w_norm, h_norm], axis=1)
+        else:
+            boxes = np.zeros((0, 4), dtype=np.float32)
+            labels = []
         
         # Convert to tensors
-        boxes = torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32)
-        labels = torch.tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64)
+        has_boxes = len(boxes) > 0
+        boxes = torch.tensor(boxes, dtype=torch.float32) if has_boxes else torch.zeros((0, 4), dtype=torch.float32)
+        labels = torch.tensor(labels, dtype=torch.int64) if len(labels) > 0 else torch.zeros((0,), dtype=torch.int64)
         
         # Normalize image
         image = image.astype(np.float32) / 255.0
@@ -124,7 +153,7 @@ class GlassWallDataset(Dataset):
         
         return image, target
     
-    def _apply_augmentation(self, image):
+    def _apply_augmentation(self, image, boxes, labels):
         """Apply LIGHT augmentation for specific marked glass panes
         
         Use case: 4 specific glass panes with "01", "02", "03", "04" markers
@@ -136,22 +165,111 @@ class GlassWallDataset(Dataset):
         
         # NO horizontal flip - would swap pane positions (01 becomes mirrored)
         
-        # Slight brightness adjustment (±15%) - office lighting changes
+        # Slight brightness adjustment (±20%) - office lighting changes
         if random.random() > 0.5:
-            brightness_factor = random.uniform(0.85, 1.15)
+            brightness_factor = random.uniform(0.8, 1.2)
             image = np.clip(image * brightness_factor, 0, 255).astype(np.uint8)
         
-        # Slight contrast adjustment (±15%) - camera exposure
+        # Slight contrast adjustment (±20%) - camera exposure
         if random.random() > 0.5:
-            contrast_factor = random.uniform(0.85, 1.15)
+            contrast_factor = random.uniform(0.8, 1.2)
             mean = image.mean(axis=(0, 1), keepdims=True)
             image = np.clip((image - mean) * contrast_factor + mean, 0, 255).astype(np.uint8)
         
-        # Slight Gaussian blur (camera focus, 20% chance)
-        if random.random() > 0.8:
+        # Color jitter in HSV space (small shifts)
+        if random.random() > 0.6:
+            hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV).astype(np.float32)
+            h_shift = random.uniform(-3, 3)
+            s_scale = random.uniform(0.85, 1.2)
+            v_scale = random.uniform(0.85, 1.2)
+            hsv[..., 0] = (hsv[..., 0] + h_shift) % 180
+            hsv[..., 1] = np.clip(hsv[..., 1] * s_scale, 0, 255)
+            hsv[..., 2] = np.clip(hsv[..., 2] * v_scale, 0, 255)
+            image = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+        
+        # Slight Gaussian blur (camera focus, 25% chance)
+        if random.random() > 0.75:
             image = cv2.GaussianBlur(image, (3, 3), 0)
         
-        return image
+        # Mild scale/translate to mimic slight camera shifts
+        if boxes:
+            h, w = image.shape[:2]
+            if random.random() > 0.6:
+                scale = random.uniform(0.95, 1.05)
+                tx = random.uniform(-0.05, 0.05) * w
+                ty = random.uniform(-0.05, 0.05) * h
+                
+                M = np.array([[scale, 0.0, tx], [0.0, scale, ty]], dtype=np.float32)
+                image = cv2.warpAffine(
+                    image,
+                    M,
+                    (w, h),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_REFLECT_101
+                )
+                
+                updated_boxes = []
+                updated_labels = []
+                for (x1, y1, x2, y2), label in zip(boxes, labels):
+                    x1 = scale * x1 + tx
+                    x2 = scale * x2 + tx
+                    y1 = scale * y1 + ty
+                    y2 = scale * y2 + ty
+                    
+                    x1 = max(0.0, min(x1, w - 1.0))
+                    x2 = max(0.0, min(x2, w - 1.0))
+                    y1 = max(0.0, min(y1, h - 1.0))
+                    y2 = max(0.0, min(y2, h - 1.0))
+                    
+                    if x2 > x1 and y2 > y1:
+                        updated_boxes.append([x1, y1, x2, y2])
+                        updated_labels.append(label)
+                
+                boxes = updated_boxes
+                labels = updated_labels
+        
+        # Mild rotation (±5 degrees) to mimic viewpoint change
+        if boxes:
+            h, w = image.shape[:2]
+            if random.random() > 0.65:
+                angle = random.uniform(-5.0, 5.0)
+                M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+                image = cv2.warpAffine(
+                    image,
+                    M,
+                    (w, h),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_REFLECT_101
+                )
+                
+                updated_boxes = []
+                updated_labels = []
+                for (x1, y1, x2, y2), label in zip(boxes, labels):
+                    corners = np.array(
+                        [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
+                        dtype=np.float32
+                    )
+                    ones = np.ones((4, 1), dtype=np.float32)
+                    corners_h = np.hstack([corners, ones])
+                    rotated = corners_h @ M.T
+                    rx1 = float(np.min(rotated[:, 0]))
+                    ry1 = float(np.min(rotated[:, 1]))
+                    rx2 = float(np.max(rotated[:, 0]))
+                    ry2 = float(np.max(rotated[:, 1]))
+                    
+                    rx1 = max(0.0, min(rx1, w - 1.0))
+                    rx2 = max(0.0, min(rx2, w - 1.0))
+                    ry1 = max(0.0, min(ry1, h - 1.0))
+                    ry2 = max(0.0, min(ry2, h - 1.0))
+                    
+                    if rx2 > rx1 and ry2 > ry1:
+                        updated_boxes.append([rx1, ry1, rx2, ry2])
+                        updated_labels.append(label)
+                
+                boxes = updated_boxes
+                labels = updated_labels
+        
+        return image, boxes, labels
 
 
 class COCORetentionDataset(Dataset):

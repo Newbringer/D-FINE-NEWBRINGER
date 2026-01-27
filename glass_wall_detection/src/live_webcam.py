@@ -25,6 +25,7 @@ if src_path not in sys.path:
 # Import src module first to trigger all registrations
 import src  # noqa: F401
 from src.core import YAMLConfig
+from model_architecture import SegmentationHead, DFineWithSegmentation
 
 
 # COCO class names (80 classes)
@@ -43,8 +44,41 @@ COCO_CLASSES = [
     'toothbrush'
 ]
 
+# Segmentation classes (Pascal Person Parts)
+SEGMENTATION_CLASSES = [
+    "background",
+    "head",
+    "torso",
+    "arms",
+    "hands",
+    "legs",
+    "feet",
+]
 
-def load_model(config_path, checkpoint_path, device):
+# BGR colors for segmentation classes
+SEGMENTATION_COLORS = {
+    0: (0, 0, 0),        # background
+    1: (0, 0, 255),      # head - red
+    2: (0, 165, 255),    # torso - orange
+    3: (0, 255, 255),    # arms - yellow
+    4: (255, 0, 255),    # hands - magenta
+    5: (0, 255, 0),      # legs - green
+    6: (255, 0, 0),      # feet - blue
+}
+
+
+def _infer_seg_feature_dim(state_dict):
+    for key in (
+        "seg_head.fpn.lateral_convs.0.weight",
+        "seg_head.aspp.project.0.weight",
+        "seg_head.decoder.0.weight",
+    ):
+        if key in state_dict:
+            return state_dict[key].shape[0]
+    return 256
+
+
+def load_model(config_path, checkpoint_path, device, enable_segmentation=False):
     """Load DFINE model, detecting whether it's 80 or 81 classes."""
     print(f"📦 Loading DFINE model...")
     print(f"   Config: {config_path}")
@@ -67,7 +101,7 @@ def load_model(config_path, checkpoint_path, device):
     # Check if this is a segmentation checkpoint (has dfine_model.* or seg_head.* prefix)
     is_segmentation_checkpoint = any('dfine_model.' in key or 'seg_head.' in key for key in state_dict.keys())
     
-    if is_segmentation_checkpoint:
+    if is_segmentation_checkpoint and not enable_segmentation:
         print("   Detected segmentation checkpoint - extracting DFINE weights...")
         # Extract only dfine_model.* weights and remove prefix
         dfine_weights = {}
@@ -117,6 +151,24 @@ def load_model(config_path, checkpoint_path, device):
         if hasattr(postprocessor, 'num_classes'):
             postprocessor.num_classes = 81
     
+    # Build segmentation model if requested and checkpoint supports it
+    if enable_segmentation and is_segmentation_checkpoint:
+        print("   Building segmentation head...")
+        model.eval()
+        with torch.no_grad():
+            dummy_input = torch.randn(1, 3, 640, 640)
+            backbone_features = model.backbone(dummy_input)
+            backbone_channels = [feat.shape[1] for feat in backbone_features]
+        
+        feature_dim = _infer_seg_feature_dim(state_dict)
+        seg_head = SegmentationHead(
+            in_channels_list=backbone_channels,
+            num_classes=len(SEGMENTATION_CLASSES),
+            feature_dim=feature_dim,
+            dropout_rate=0.1
+        )
+        model = DFineWithSegmentation(dfine_model=model, seg_head=seg_head, freeze_detection=False)
+    
     # Load weights
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing:
@@ -140,7 +192,7 @@ def load_model(config_path, checkpoint_path, device):
     print(f"   Total parameters: {total_params:,}")
     print(f"   Number of classes: {num_classes}")
     
-    return model, postprocessor, num_classes
+    return model, postprocessor, num_classes, (enable_segmentation and is_segmentation_checkpoint)
 
 
 def expand_model_to_81_classes(model):
@@ -362,9 +414,9 @@ def postprocess_outputs(outputs, postprocessor, orig_size, conf_threshold, devic
         
         if keep_indices:
             keep_indices = torch.cat(keep_indices)
-            boxes = boxes[keep_indices].cpu().numpy()
-            scores = scores[keep_indices].cpu().numpy()
-            labels = labels[keep_indices].cpu().numpy()
+            boxes = boxes[keep_indices].detach().cpu().numpy()
+            scores = scores[keep_indices].detach().cpu().numpy()
+            labels = labels[keep_indices].detach().cpu().numpy()
             
             if verbose:
                 print(f"\n  Final detections after NMS: {len(boxes)}")
@@ -397,15 +449,16 @@ def draw_detections(frame, boxes, scores, labels, show_labels=True):
     for box, score, label in zip(boxes, scores, labels):
         x1, y1, x2, y2 = box.astype(int)
         
-        # Color based on class
-        color = (0, 255, 0)  # Green
+        # Color based on class (class 81 -> red, others -> green)
+        class_idx = int(label)
+        is_class_81 = class_idx == 80 or class_idx == 81
+        color = (0, 0, 255) if is_class_81 else (0, 255, 0)
         
         # Draw box
         cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
         
         # Draw label
         if show_labels:
-            class_idx = int(label)
             class_name = COCO_CLASSES[class_idx] if class_idx < len(COCO_CLASSES) else f'class_{class_idx}'
             label_text = f'{class_name}: {score:.2f}'
             
@@ -418,6 +471,44 @@ def draw_detections(frame, boxes, scores, labels, show_labels=True):
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     
     return vis_frame
+
+
+def overlay_segmentation(frame, seg_logits, person_boxes, alpha=0.4):
+    """Overlay segmentation on detected person regions."""
+    if seg_logits is None or len(person_boxes) == 0:
+        return frame
+    
+    seg_mask = torch.argmax(seg_logits, dim=1).squeeze(0).cpu().numpy().astype(np.uint8)
+    seg_mask = cv2.resize(seg_mask, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
+    
+    overlay = np.zeros_like(frame, dtype=np.uint8)
+    mask = np.zeros(frame.shape[:2], dtype=bool)
+    
+    for box in person_boxes:
+        x1, y1, x2, y2 = box.astype(int)
+        x1 = max(0, min(x1, frame.shape[1] - 1))
+        x2 = max(0, min(x2, frame.shape[1] - 1))
+        y1 = max(0, min(y1, frame.shape[0] - 1))
+        y2 = max(0, min(y2, frame.shape[0] - 1))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        
+        region = seg_mask[y1:y2, x1:x2]
+        region_overlay = np.zeros((y2 - y1, x2 - x1, 3), dtype=np.uint8)
+        for class_id, color in SEGMENTATION_COLORS.items():
+            if class_id == 0:
+                continue
+            region_overlay[region == class_id] = color
+        
+        overlay[y1:y2, x1:x2] = region_overlay
+        mask[y1:y2, x1:x2] |= region > 0
+    
+    if mask.any():
+        blended = frame.copy()
+        blended[mask] = (frame[mask] * (1 - alpha) + overlay[mask] * alpha).astype(np.uint8)
+        return blended
+    
+    return frame
 
 
 def parse_args():
@@ -448,6 +539,10 @@ def parse_args():
                         help='Output video file path')
     parser.add_argument('--only-class-81', action='store_true',
                         help='Only keep detections for class 81 (label index 80)')
+    parser.add_argument('--segmentation', action='store_true',
+                        help='Enable person-part segmentation overlay')
+    parser.add_argument('--seg-alpha', type=float, default=0.4,
+                        help='Segmentation overlay opacity (0-1)')
     return parser.parse_args()
 
 
@@ -465,7 +560,12 @@ def main():
     
     # Load model
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    model, postprocessor, num_classes = load_model(args.config, args.checkpoint, device)
+    model, postprocessor, num_classes, has_seg = load_model(
+        args.config, args.checkpoint, device, enable_segmentation=args.segmentation
+    )
+    if args.segmentation and not has_seg:
+        print("⚠️  Segmentation requested but checkpoint has no seg_head; continuing without overlay.")
+        args.segmentation = False
     
     # Update COCO_CLASSES if we have 81 classes
     global COCO_CLASSES
@@ -529,9 +629,13 @@ def main():
             with torch.no_grad():
                 outputs = model(input_tensor)
             
+            seg_logits = None
+            if args.segmentation and isinstance(outputs, dict) and 'segmentation' in outputs:
+                seg_logits = outputs.pop('segmentation')
+            
             # Postprocess
             boxes, scores, labels = postprocess_outputs(
-                outputs, postprocessor, orig_size, args.confidence, device, 
+                outputs, postprocessor, orig_size, args.confidence, device,
                 verbose=args.debug
             )
 
@@ -553,6 +657,12 @@ def main():
             
             # Draw detections
             vis_frame = draw_detections(frame, boxes, scores, labels)
+            
+            # Overlay segmentation on people
+            if args.segmentation and seg_logits is not None:
+                person_mask = labels == 0
+                person_boxes = boxes[person_mask] if len(labels) > 0 else np.array([])
+                vis_frame = overlay_segmentation(vis_frame, seg_logits, person_boxes, alpha=args.seg_alpha)
             
             # Calculate and draw FPS
             now = time.time()
