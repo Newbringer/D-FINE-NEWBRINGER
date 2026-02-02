@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Training Script for Adding Amodal Detection to DFINE Model
-Trains on KINS dataset while keeping DFINE and segmentation frozen
+Training Script for Amodal Person Detection using COCOA Dataset
+Perfect for DFINE since it's already pretrained on COCO!
 """
 
 import os
@@ -14,7 +14,7 @@ from tqdm import tqdm
 import wandb
 from pathlib import Path
 
-# Add project paths (ensure segmentation_sivert core resolves before src/core)
+# Add project paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / 'segmentation_sivert'))
 sys.path.insert(0, str(PROJECT_ROOT / 'glass_wall_detection' / 'src'))
@@ -22,7 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT / 'amodal_detection_head'))
 sys.path.insert(0, str(PROJECT_ROOT / 'src'))
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from kins_dataset import KINSAmodalDataset, collate_fn
+from cocoa_dataset import COCOAAmodalDataset, collate_fn
 from amodal_head import (
     AmodalDetectionHead,
     AmodalLoss,
@@ -34,18 +34,22 @@ from model_architecture import SegmentationHead
 
 def parse_args():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Train Amodal Detection on KINS')
+    parser = argparse.ArgumentParser(description='Train Amodal Detection on COCOA')
     
     # Paths
-    parser.add_argument('--kins-root', default="KINS/",
-                        help='Path to KINS dataset root directory')
+    parser.add_argument('--coco-root', required=True,
+                        help='Path to COCO images directory (e.g., coco/train2014)')
+    parser.add_argument('--cocoa-train-ann', required=True,
+                        help='Path to COCOA training annotation JSON')
+    parser.add_argument('--cocoa-val-ann', required=True,
+                        help='Path to COCOA validation annotation JSON')
     parser.add_argument('--dfine-config', default='models/dfine_hgnetv2_x_obj2coco.yml',
                         help='Path to DFINE config')
     parser.add_argument('--dfine-checkpoint', default='models/dfine_0.73.pth',
                         help='Path to DFINE checkpoint')
-    parser.add_argument('--seg-checkpoint', default="models/dfine_0.73.pth",
+    parser.add_argument('--seg-checkpoint', required=True,
                         help='Path to trained segmentation model checkpoint')
-    parser.add_argument('--output-dir', default='outputs/amodal_kins',
+    parser.add_argument('--output-dir', default='outputs/amodal_cocoa',
                         help='Output directory for checkpoints')
     
     # Training parameters
@@ -59,16 +63,13 @@ def parse_args():
                         help='Weight decay')
     parser.add_argument('--image-size', type=int, default=640,
                         help='Input image size')
-    parser.add_argument('--max-objects', type=int, default=100,
+    parser.add_argument('--max-objects', type=int, default=50,
                         help='Maximum objects per image')
     
     # Model parameters
-    parser.add_argument('--seg-tier', default='standard',
-                        choices=['lightweight', 'standard', 'advanced'],
-                        help='Tier of segmentation head to load')
     parser.add_argument('--hidden-dim', type=int, default=256,
                         help='Hidden dimension for amodal head')
-    parser.add_argument('--num-queries', type=int, default=300,
+    parser.add_argument('--num-queries', type=int, default=100,
                         help='Number of detection queries')
     
     # System
@@ -78,7 +79,7 @@ def parse_args():
                         help='Device to use for training')
     
     # Logging
-    parser.add_argument('--wandb-project', default='dfine-amodal-kins',
+    parser.add_argument('--wandb-project', default='dfine-amodal-cocoa',
                         help='Weights & Biases project name')
     parser.add_argument('--no-wandb', action='store_true',
                         help='Disable wandb logging')
@@ -107,19 +108,16 @@ def load_existing_models(args):
     # Extract hyperparameters
     if 'hyperparameters' in seg_checkpoint:
         hyper = seg_checkpoint['hyperparameters']
-        seg_tier = hyper.get('tier', args.seg_tier)
         feature_dim = hyper.get('feature_dim', 256)
         num_classes = hyper.get('num_classes', 7)
     else:
-        seg_tier = args.seg_tier
         feature_dim = 256
         num_classes = 7
     
-    print(f"   Segmentation tier: {seg_tier}")
     print(f"   Feature dim: {feature_dim}")
     print(f"   Num classes: {num_classes}")
     
-    # Create segmentation head (glass_wall architecture)
+    # Create segmentation head
     segmentation_head = SegmentationHead(
         in_channels_list=backbone_channels,
         num_classes=num_classes,
@@ -128,15 +126,12 @@ def load_existing_models(args):
     )
     
     # Load segmentation weights
-    # Extract just the segmentation head weights from combined model
     if isinstance(seg_checkpoint, dict) and 'model_state_dict' in seg_checkpoint:
         state_dict = seg_checkpoint['model_state_dict']
     elif isinstance(seg_checkpoint, dict) and 'state_dict' in seg_checkpoint:
         state_dict = seg_checkpoint['state_dict']
-    elif isinstance(seg_checkpoint, dict):
-        state_dict = seg_checkpoint
     else:
-        state_dict = {}
+        state_dict = seg_checkpoint
 
     seg_state_dict = {}
     for key, value in state_dict.items():
@@ -147,59 +142,52 @@ def load_existing_models(args):
             new_key = key.replace('segmentation_head.', '')
             seg_state_dict[new_key] = value
 
-    # Infer feature_dim / num_classes from checkpoint when not provided
     if seg_state_dict:
-        if feature_dim is None or feature_dim == 256:
-            if 'fpn.lateral_convs.0.weight' in seg_state_dict:
-                feature_dim = seg_state_dict['fpn.lateral_convs.0.weight'].shape[0]
-        if num_classes is None or num_classes == 7:
-            if 'decoder.6.weight' in seg_state_dict:
-                num_classes = seg_state_dict['decoder.6.weight'].shape[0]
-        segmentation_head = SegmentationHead(
-            in_channels_list=backbone_channels,
-            num_classes=num_classes,
-            feature_dim=feature_dim,
-            dropout_rate=0.1
-        )
-
-    # Filter by matching shapes to avoid size-mismatch errors
-    model_state = segmentation_head.state_dict()
-    filtered_state = {
-        k: v for k, v in seg_state_dict.items()
-        if k in model_state and v.shape == model_state[k].shape
-    }
-
-    if not filtered_state:
-        print("⚠️  No compatible segmentation weights found in checkpoint. Using random init.")
-    else:
-        missing, unexpected = segmentation_head.load_state_dict(filtered_state, strict=False)
-        print("✅ Loaded segmentation weights")
-        if missing:
-            print(f"   Missing keys: {len(missing)}")
-        if unexpected:
-            print(f"   Unexpected keys: {len(unexpected)}")
+        model_state = segmentation_head.state_dict()
+        filtered_state = {
+            k: v for k, v in seg_state_dict.items()
+            if k in model_state and v.shape == model_state[k].shape
+        }
+        
+        if filtered_state:
+            missing, unexpected = segmentation_head.load_state_dict(filtered_state, strict=False)
+            print("✅ Loaded segmentation weights")
+            if missing:
+                print(f"   Missing keys: {len(missing)}")
+            if unexpected:
+                print(f"   Unexpected keys: {len(unexpected)}")
+        else:
+            print("⚠️  No compatible segmentation weights found. Using random init.")
     
     return dfine_model, segmentation_head, backbone_channels
 
 
 def create_dataloaders(args):
     """Create train and val dataloaders"""
-    print("📊 Creating dataloaders...")
+    print("📊 Creating COCOA dataloaders...")
     
-    train_dataset = KINSAmodalDataset(
-        root_dir=args.kins_root,
+    # Determine COCO root for validation (might be different directory)
+    coco_train_root = args.coco_root
+    coco_val_root = args.coco_root.replace('train2014', 'val2014')
+    
+    train_dataset = COCOAAmodalDataset(
+        coco_root=coco_train_root,
+        cocoa_annotation_file=args.cocoa_train_ann,
         split='train',
         image_size=args.image_size,
         max_objects=args.max_objects,
-        augment=True
+        augment=True,
+        person_only=True
     )
     
-    val_dataset = KINSAmodalDataset(
-        root_dir=args.kins_root,
+    val_dataset = COCOAAmodalDataset(
+        coco_root=coco_val_root,
+        cocoa_annotation_file=args.cocoa_val_ann,
         split='val',
         image_size=args.image_size,
         max_objects=args.max_objects,
-        augment=False
+        augment=False,
+        person_only=True
     )
     
     train_loader = DataLoader(
@@ -208,7 +196,8 @@ def create_dataloaders(args):
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        drop_last=True
     )
     
     val_loader = DataLoader(
@@ -243,7 +232,6 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch):
     pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
     
     for batch_idx, batch in enumerate(pbar):
-        # Move to device
         images = batch['image'].to(device)
         
         targets = {
@@ -254,11 +242,9 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch):
             'valid_mask': batch['valid_mask'].to(device)
         }
         
-        # Forward pass
         optimizer.zero_grad()
         outputs = model(images)
         
-        # Calculate loss (only on amodal predictions)
         predictions = {
             'visible_boxes': outputs['visible_boxes'],
             'amodal_boxes': outputs['amodal_boxes'],
@@ -269,25 +255,25 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch):
         
         loss, loss_dict = criterion(predictions, targets)
         
-        # Backward pass
+        if torch.isnan(loss):
+            print(f"⚠️  NaN loss at batch {batch_idx}, skipping...")
+            continue
+        
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
-        # Update metrics
         total_loss += loss.item()
         for key in loss_components:
             if f'loss_{key}' in loss_dict:
                 loss_components[key] += loss_dict[f'loss_{key}']
         
-        # Update progress bar
         pbar.set_postfix({
             'loss': f'{loss.item():.4f}',
             'vis_l1': f'{loss_dict["loss_visible_l1"]:.4f}',
             'amod_l1': f'{loss_dict["loss_amodal_l1"]:.4f}'
         })
     
-    # Average losses
     num_batches = len(train_loader)
     avg_loss = total_loss / num_batches
     for key in loss_components:
@@ -336,12 +322,12 @@ def validate_epoch(model, val_loader, criterion, device):
             
             loss, loss_dict = criterion(predictions, targets)
             
-            total_loss += loss.item()
-            for key in loss_components:
-                if f'loss_{key}' in loss_dict:
-                    loss_components[key] += loss_dict[f'loss_{key}']
+            if not torch.isnan(loss):
+                total_loss += loss.item()
+                for key in loss_components:
+                    if f'loss_{key}' in loss_dict:
+                        loss_components[key] += loss_dict[f'loss_{key}']
     
-    # Average losses
     num_batches = len(val_loader)
     avg_loss = total_loss / num_batches
     for key in loss_components:
@@ -355,11 +341,10 @@ def save_checkpoint(model, optimizer, epoch, best_loss, args, filename=None):
     os.makedirs(args.output_dir, exist_ok=True)
     
     if filename is None:
-        filename = f'amodal_epoch_{epoch}.pth'
+        filename = f'amodal_cocoa_epoch_{epoch}.pth'
     
     filepath = os.path.join(args.output_dir, filename)
     
-    # Save only the amodal head (DFINE and seg are frozen)
     torch.save({
         'epoch': epoch,
         'amodal_head_state_dict': model.amodal_head.state_dict(),
@@ -376,30 +361,30 @@ def main():
     args = parse_args()
     
     print("=" * 80)
-    print("🎯 TRAINING AMODAL DETECTION ON KINS DATASET")
+    print("🎯 TRAINING AMODAL PERSON DETECTION ON COCOA DATASET")
     print("=" * 80)
     print(f"📋 Configuration:")
-    print(f"   KINS root: {args.kins_root}")
+    print(f"   COCO images: {args.coco_root}")
+    print(f"   COCOA train ann: {args.cocoa_train_ann}")
+    print(f"   COCOA val ann: {args.cocoa_val_ann}")
     print(f"   Segmentation checkpoint: {args.seg_checkpoint}")
     print(f"   Output dir: {args.output_dir}")
     print(f"   Batch size: {args.batch_size}")
     print(f"   Epochs: {args.epochs}")
     print(f"   Learning rate: {args.lr}")
+    print(f"   ✨ PERFECT MATCH: DFINE pretrained on COCO!")
     print("=" * 80)
     
-    # Setup device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"🚀 Using device: {device}")
     
-    # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Initialize wandb
     if not args.no_wandb:
         wandb.init(
             project=args.wandb_project,
             config=vars(args),
-            name=f'amodal_kins_{args.epochs}ep'
+            name=f'cocoa_{args.epochs}ep'
         )
     
     # Load existing models
@@ -408,9 +393,9 @@ def main():
     # Create amodal head
     print("🏗️  Creating amodal detection head...")
     amodal_head = AmodalDetectionHead(
-        in_channels=backbone_channels[-1],  # Use richest features
+        in_channels=backbone_channels[-1],
         hidden_dim=args.hidden_dim,
-        num_classes=7,  # KINS categories
+        num_classes=2,  # Background + person
         num_queries=args.num_queries
     )
     
@@ -435,7 +420,7 @@ def main():
     # Create loss and optimizer
     criterion = AmodalLoss()
     optimizer = optim.AdamW(
-        model.amodal_head.parameters(),  # Only optimize amodal head
+        model.amodal_head.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay
     )
@@ -453,17 +438,14 @@ def main():
     for epoch in range(1, args.epochs + 1):
         print(f"\n📅 Epoch {epoch}/{args.epochs}")
         
-        # Train
         train_loss, train_components = train_epoch(
             model, train_loader, criterion, optimizer, device, epoch
         )
         
-        # Validate
         val_loss, val_components = validate_epoch(
             model, val_loader, criterion, device
         )
         
-        # Update scheduler
         scheduler.step()
         
         # Print results
@@ -477,7 +459,6 @@ def main():
         print(f"   Visible L1: {val_components['visible_l1']:.4f}")
         print(f"   Amodal L1: {val_components['amodal_l1']:.4f}")
         
-        # Log to wandb
         if not args.no_wandb:
             log_dict = {
                 'epoch': epoch,
@@ -492,13 +473,11 @@ def main():
             
             wandb.log(log_dict)
         
-        # Save best model
         if val_loss < best_loss:
             best_loss = val_loss
-            save_checkpoint(model, optimizer, epoch, best_loss, args, 'best_amodal.pth')
+            save_checkpoint(model, optimizer, epoch, best_loss, args, 'best_cocoa.pth')
             print(f"🏆 New best model! Val loss: {best_loss:.4f}")
         
-        # Save periodic checkpoint
         if epoch % args.save_every == 0:
             save_checkpoint(model, optimizer, epoch, best_loss, args)
     
