@@ -34,22 +34,28 @@ from model_architecture import SegmentationHead
 
 def parse_args():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Train Amodal Detection on COCOA')
+    parser = argparse.ArgumentParser(description='Train Amodal Person Detection on COCOA')
     
     # Paths
-    parser.add_argument('--coco-root', required=True,
-                        help='Path to COCO images directory (e.g., coco/train2014)')
-    parser.add_argument('--cocoa-train-ann', required=True,
+    parser.add_argument('--coco-train-root', 
+                        default='coco/train2014',
+                        help='Path to COCO train2014 images directory')
+    parser.add_argument('--coco-val-root',
+                        default='coco/val2014',
+                        help='Path to COCO val2014 images directory')
+    parser.add_argument('--cocoa-train-ann', 
+                        default='coco/COCO_amodal_train2014_detectron.json',
                         help='Path to COCOA training annotation JSON')
-    parser.add_argument('--cocoa-val-ann', required=True,
+    parser.add_argument('--cocoa-val-ann', 
+                        default='coco/COCO_amodal_val2014_detectron.json',
                         help='Path to COCOA validation annotation JSON')
     parser.add_argument('--dfine-config', default='models/dfine_hgnetv2_x_obj2coco.yml',
                         help='Path to DFINE config')
     parser.add_argument('--dfine-checkpoint', default='models/dfine_0.73.pth',
                         help='Path to DFINE checkpoint')
-    parser.add_argument('--seg-checkpoint', required=True,
+    parser.add_argument('--seg-checkpoint', default='models/dfine_0.73.pth',
                         help='Path to trained segmentation model checkpoint')
-    parser.add_argument('--output-dir', default='outputs/amodal_cocoa',
+    parser.add_argument('--output-dir', default='outputs/amodal_cocoa_person',
                         help='Output directory for checkpoints')
     
     # Training parameters
@@ -70,7 +76,7 @@ def parse_args():
     parser.add_argument('--hidden-dim', type=int, default=256,
                         help='Hidden dimension for amodal head')
     parser.add_argument('--num-queries', type=int, default=100,
-                        help='Number of detection queries')
+                        help='Number of detection queries (100 for person-only)')
     
     # System
     parser.add_argument('--num-workers', type=int, default=4,
@@ -79,7 +85,7 @@ def parse_args():
                         help='Device to use for training')
     
     # Logging
-    parser.add_argument('--wandb-project', default='dfine-amodal-cocoa',
+    parser.add_argument('--wandb-project', default='dfine-amodal-cocoa-person',
                         help='Weights & Biases project name')
     parser.add_argument('--no-wandb', action='store_true',
                         help='Disable wandb logging')
@@ -164,14 +170,10 @@ def load_existing_models(args):
 
 def create_dataloaders(args):
     """Create train and val dataloaders"""
-    print("📊 Creating COCOA dataloaders...")
-    
-    # Determine COCO root for validation (might be different directory)
-    coco_train_root = args.coco_root
-    coco_val_root = args.coco_root.replace('train2014', 'val2014')
+    print("📊 Creating COCOA person dataloaders...")
     
     train_dataset = COCOAAmodalDataset(
-        coco_root=coco_train_root,
+        coco_root=args.coco_train_root,
         cocoa_annotation_file=args.cocoa_train_ann,
         split='train',
         image_size=args.image_size,
@@ -181,7 +183,7 @@ def create_dataloaders(args):
     )
     
     val_dataset = COCOAAmodalDataset(
-        coco_root=coco_val_root,
+        coco_root=args.coco_val_root,
         cocoa_annotation_file=args.cocoa_val_ann,
         split='val',
         image_size=args.image_size,
@@ -341,7 +343,7 @@ def save_checkpoint(model, optimizer, epoch, best_loss, args, filename=None):
     os.makedirs(args.output_dir, exist_ok=True)
     
     if filename is None:
-        filename = f'amodal_cocoa_epoch_{epoch}.pth'
+        filename = f'amodal_cocoa_person_epoch_{epoch}.pth'
     
     filepath = os.path.join(args.output_dir, filename)
     
@@ -364,7 +366,8 @@ def main():
     print("🎯 TRAINING AMODAL PERSON DETECTION ON COCOA DATASET")
     print("=" * 80)
     print(f"📋 Configuration:")
-    print(f"   COCO images: {args.coco_root}")
+    print(f"   COCO train images: {args.coco_train_root}")
+    print(f"   COCO val images: {args.coco_val_root}")
     print(f"   COCOA train ann: {args.cocoa_train_ann}")
     print(f"   COCOA val ann: {args.cocoa_val_ann}")
     print(f"   Segmentation checkpoint: {args.seg_checkpoint}")
@@ -372,7 +375,8 @@ def main():
     print(f"   Batch size: {args.batch_size}")
     print(f"   Epochs: {args.epochs}")
     print(f"   Learning rate: {args.lr}")
-    print(f"   ✨ PERFECT MATCH: DFINE pretrained on COCO!")
+    print(f"   Num queries: {args.num_queries} (person-only)")
+    print(f"   ✨ PERFECT MATCH: DFINE pretrained on COCO + Amodal person annotations!")
     print("=" * 80)
     
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -384,7 +388,7 @@ def main():
         wandb.init(
             project=args.wandb_project,
             config=vars(args),
-            name=f'cocoa_{args.epochs}ep'
+            name=f'cocoa_person_{args.epochs}ep_bs{args.batch_size}'
         )
     
     # Load existing models
@@ -395,7 +399,7 @@ def main():
     amodal_head = AmodalDetectionHead(
         in_channels=backbone_channels[-1],
         hidden_dim=args.hidden_dim,
-        num_classes=2,  # Background + person
+        num_classes=2,  # Background + person only
         num_queries=args.num_queries
     )
     
@@ -412,7 +416,7 @@ def main():
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"📊 Model parameters:")
     print(f"   Total: {total_params:,}")
-    print(f"   Trainable: {trainable_params:,} ({100*trainable_params/total_params:.1f}%)")
+    print(f"   Trainable (amodal head only): {trainable_params:,} ({100*trainable_params/total_params:.1f}%)")
     
     # Create dataloaders
     train_loader, val_loader = create_dataloaders(args)
@@ -433,6 +437,7 @@ def main():
     
     # Training loop
     print(f"\n🚀 Starting training for {args.epochs} epochs...")
+    print(f"   Training on PERSON CLASS ONLY from COCOA dataset")
     best_loss = float('inf')
     
     for epoch in range(1, args.epochs + 1):
@@ -475,7 +480,7 @@ def main():
         
         if val_loss < best_loss:
             best_loss = val_loss
-            save_checkpoint(model, optimizer, epoch, best_loss, args, 'best_cocoa.pth')
+            save_checkpoint(model, optimizer, epoch, best_loss, args, 'best_cocoa_person.pth')
             print(f"🏆 New best model! Val loss: {best_loss:.4f}")
         
         if epoch % args.save_every == 0:
@@ -484,10 +489,25 @@ def main():
     print(f"\n🎉 Training completed!")
     print(f"🏆 Best validation loss: {best_loss:.4f}")
     print(f"📁 Models saved in: {args.output_dir}")
+    print(f"🎯 Model trained on PERSON CLASS ONLY")
     
     if not args.no_wandb:
         wandb.finish()
 
 
 if __name__ == '__main__':
+    # Example usage:
+    # python amodal_detection_head/train_amodal.py \
+    #     --seg-checkpoint path/to/segmentation.pth \
+    #     --batch-size 8 \
+    #     --epochs 50 \
+    #     --lr 1e-4
+    #
+    # Or with custom paths:
+    # python amodal_detection_head/train_amodal.py \
+    #     --coco-train-root amodal_detection_head/coco/train2014 \
+    #     --coco-val-root amodal_detection_head/coco/val2014 \
+    #     --cocoa-train-ann amodal_detection_head/coco/COCO_amodal_train2014_detectron.json \
+    #     --cocoa-val-ann amodal_detection_head/coco/COCO_amodal_val2014_detectron.json \
+    #     --seg-checkpoint path/to/segmentation.pth
     main()

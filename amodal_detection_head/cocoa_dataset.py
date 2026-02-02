@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 COCOA Dataset Loader for Amodal Person Detection
-COCOA = COCO + Amodal annotations
-Perfect for amodal detection training with COCO-pretrained DFINE!
+CORRECTED for actual COCOA JSON structure with polygon mask support
 """
 
 import os
@@ -10,9 +9,8 @@ import json
 import torch
 import numpy as np
 from torch.utils.data import Dataset
-from PIL import Image
 import cv2
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List
 import albumentations as A
 from pycocotools import mask as mask_utils
 
@@ -21,15 +19,13 @@ class COCOAAmodalDataset(Dataset):
     """
     COCOA Dataset for Amodal Person Detection
     
-    COCOA provides:
-    - visible_mask: What you can see
-    - invisible_mask: Occluded parts
-    - Full mask = visible + invisible (amodal extent)
-    - Works with standard COCO images!
+    COCOA structure:
+    - bbox: visible bounding box
+    - segmentation: full amodal mask (polygon or RLE)
+    - visible_mask: visible-only mask (polygon or RLE)
+    - amodal_region['name']: category name (we want 'person')
+    - occlude_rate: occlusion score
     """
-    
-    # COCO person category ID
-    PERSON_CATEGORY_ID = 1
     
     def __init__(self,
                  coco_root: str,
@@ -41,7 +37,7 @@ class COCOAAmodalDataset(Dataset):
                  person_only: bool = True):
         """
         Args:
-            coco_root: Path to COCO images (e.g., /path/to/coco/train2014)
+            coco_root: Path to COCO images (e.g., coco/train2014)
             cocoa_annotation_file: Path to COCOA annotation JSON
             split: 'train' or 'val'
             image_size: Target image size
@@ -88,7 +84,49 @@ class COCOAAmodalDataset(Dataset):
         print(f"✅ Loaded COCOA {split} set:")
         print(f"   Images: {len(self.valid_images)}")
         print(f"   Total person annotations: {self.total_annotations}")
-        print(f"   Avg people per image: {self.total_annotations / len(self.valid_images):.2f}")
+        if len(self.valid_images) > 0:
+            print(f"   Avg people per image: {self.total_annotations / len(self.valid_images):.2f}")
+    
+    def _mask_to_bbox(self, mask_data, img_width, img_height):
+        """Convert RLE or polygon mask to bounding box [x, y, w, h]"""
+        try:
+            if isinstance(mask_data, dict):
+                # RLE format
+                mask = mask_utils.decode(mask_data)
+            elif isinstance(mask_data, list):
+                # Polygon format - convert to mask
+                if len(mask_data) == 0:
+                    return None
+                
+                # Create blank mask
+                mask = np.zeros((img_height, img_width), dtype=np.uint8)
+                
+                # Draw polygons
+                for polygon in mask_data:
+                    if len(polygon) < 6:  # Need at least 3 points (x,y pairs)
+                        continue
+                    # Reshape polygon to (n_points, 2)
+                    poly = np.array(polygon).reshape(-1, 2).astype(np.int32)
+                    cv2.fillPoly(mask, [poly], 1)
+            else:
+                return None
+            
+            if mask.sum() == 0:
+                return None
+            
+            rows = np.any(mask, axis=1)
+            cols = np.any(mask, axis=0)
+            
+            if not rows.any() or not cols.any():
+                return None
+            
+            y_min, y_max = np.where(rows)[0][[0, -1]]
+            x_min, x_max = np.where(cols)[0][[0, -1]]
+            
+            return [float(x_min), float(y_min), float(x_max - x_min + 1), float(y_max - y_min + 1)]
+        except Exception as e:
+            print(f"⚠️  Error converting mask to bbox: {e}")
+            return None
     
     def _build_dataset(self):
         """Build dataset from COCOA annotations"""
@@ -96,119 +134,92 @@ class COCOAAmodalDataset(Dataset):
         self.img_to_anns = {}
         self.total_annotations = 0
         
-        for img_data in self.cocoa_data:
-            image_id = img_data['image_id']
-            file_name = img_data['file_name']
-            width = img_data['width']
-            height = img_data['height']
+        # Parse structure
+        images = self.cocoa_data.get('images', [])
+        annotations = self.cocoa_data.get('annotations', [])
+        
+        # Build image id to image info mapping
+        img_id_to_info = {img['id']: img for img in images}
+        
+        # Build image id to annotations mapping
+        img_id_to_anns = {}
+        for ann in annotations:
+            img_id = ann['image_id']
             
-            # Get annotations for this image
-            annotations = img_data.get('annotations', {})
-            regions = annotations.get('regions', [])
+            # Filter for person if requested
+            if self.person_only:
+                amodal_region = ann.get('amodal_region', {})
+                obj_name = amodal_region.get('name', '').lower()
+                if obj_name != 'person':
+                    continue
             
-            if len(regions) == 0:
+            if img_id not in img_id_to_anns:
+                img_id_to_anns[img_id] = []
+            img_id_to_anns[img_id].append(ann)
+        
+        print(f"   Found {len(img_id_to_anns)} images with person annotations")
+        
+        # Process each image
+        for img_id, image_anns in img_id_to_anns.items():
+            if img_id not in img_id_to_info:
                 continue
             
-            # Process each region (COCOA format has nested structure)
-            valid_anns = []
+            img_info = img_id_to_info[img_id]
             
-            for region_list in regions:
-                # region_list contains multiple annotator annotations
-                if not isinstance(region_list, dict):
+            # Process annotations
+            valid_anns = []
+            for ann in image_anns:
+                # Get visible bbox (this is what we can see)
+                visible_bbox = ann.get('bbox', None)
+                
+                if visible_bbox is None or len(visible_bbox) != 4:
                     continue
                 
-                names = region_list.get('name', [])
-                segmentations = region_list.get('segmentation', [])
-                visible_masks = region_list.get('visible_mask', [])
-                occlude_rates = region_list.get('occlude_rate', [])
+                if visible_bbox[2] <= 0 or visible_bbox[3] <= 0:
+                    continue
                 
-                for i, name in enumerate(names):
-                    # Filter for person only if requested
-                    if self.person_only and name.lower() != 'person':
-                        continue
-                    
-                    if i >= len(segmentations):
-                        continue
-                    
-                    # Get masks
-                    full_mask = segmentations[i] if i < len(segmentations) else None
-                    visible_mask = visible_masks[i] if i < len(visible_masks) else None
-                    occlude_rate = occlude_rates[i] if i < len(occlude_rates) else 0.0
-                    
-                    if full_mask is None:
-                        continue
-                    
-                    # Convert RLE to binary mask if needed
-                    if isinstance(full_mask, dict):
-                        full_mask_np = mask_utils.decode(full_mask)
-                    elif hasattr(full_mask, 'size'):  # PIL Image
-                        full_mask_np = np.array(full_mask)
-                    else:
-                        continue
-                    
-                    # Get bounding boxes from masks
-                    amodal_bbox = self._mask_to_bbox(full_mask_np)
+                # Get amodal bbox from segmentation mask
+                segmentation = ann.get('segmentation', None)
+                
+                if segmentation is None:
+                    # If no segmentation, use visible bbox for both
+                    amodal_bbox = visible_bbox
+                else:
+                    # Compute amodal bbox from full mask (need image dimensions)
+                    amodal_bbox = self._mask_to_bbox(
+                        segmentation, 
+                        img_info['width'], 
+                        img_info['height']
+                    )
                     if amodal_bbox is None:
-                        continue
-                    
-                    # Get visible bbox
-                    if visible_mask is not None:
-                        if isinstance(visible_mask, dict):
-                            visible_mask_np = mask_utils.decode(visible_mask)
-                        elif hasattr(visible_mask, 'size'):
-                            visible_mask_np = np.array(visible_mask)
-                        else:
-                            visible_mask_np = full_mask_np
-                        visible_bbox = self._mask_to_bbox(visible_mask_np)
-                    else:
-                        visible_bbox = amodal_bbox  # No occlusion
-                    
-                    if visible_bbox is None:
-                        continue
-                    
-                    valid_anns.append({
-                        'visible_bbox': visible_bbox,
-                        'amodal_bbox': amodal_bbox,
-                        'occlude_rate': occlude_rate,
-                        'category_name': name
-                    })
+                        amodal_bbox = visible_bbox
+                
+                # Validate amodal bbox
+                if amodal_bbox[2] <= 0 or amodal_bbox[3] <= 0:
+                    amodal_bbox = visible_bbox
+                
+                # Get occlusion rate
+                occlude_rate = ann.get('occlude_rate', 0)
+                if occlude_rate is None:
+                    occlude_rate = 0
+                occlude_rate = float(occlude_rate)
+                
+                valid_anns.append({
+                    'visible_bbox': visible_bbox,
+                    'amodal_bbox': amodal_bbox,
+                    'occlude_rate': occlude_rate,
+                    'category_name': ann.get('amodal_region', {}).get('name', 'person')
+                })
             
             if len(valid_anns) > 0:
                 self.valid_images.append({
-                    'image_id': image_id,
-                    'file_name': file_name,
-                    'width': width,
-                    'height': height
+                    'image_id': img_id,
+                    'file_name': img_info['file_name'],
+                    'width': img_info['width'],
+                    'height': img_info['height']
                 })
-                self.img_to_anns[image_id] = valid_anns
+                self.img_to_anns[img_id] = valid_anns
                 self.total_annotations += len(valid_anns)
-    
-    def _mask_to_bbox(self, mask):
-        """Convert binary mask to bounding box [x, y, w, h]"""
-        if mask.sum() == 0:
-            return None
-        
-        rows = np.any(mask, axis=1)
-        cols = np.any(mask, axis=0)
-        
-        if not rows.any() or not cols.any():
-            return None
-        
-        y_min, y_max = np.where(rows)[0][[0, -1]]
-        x_min, x_max = np.where(cols)[0][[0, -1]]
-        
-        return [float(x_min), float(y_min), float(x_max - x_min + 1), float(y_max - y_min + 1)]
-    
-    def _calculate_occlusion_score(self, visible_bbox, amodal_bbox):
-        """Calculate occlusion score as 1 - (visible_area / amodal_area)"""
-        visible_area = visible_bbox[2] * visible_bbox[3]
-        amodal_area = amodal_bbox[2] * amodal_bbox[3]
-        
-        if amodal_area == 0:
-            return 0.0
-        
-        occlusion_score = 1.0 - (visible_area / amodal_area)
-        return np.clip(occlusion_score, 0.0, 1.0)
     
     def __len__(self):
         return len(self.valid_images)
@@ -222,15 +233,14 @@ class COCOAAmodalDataset(Dataset):
         
         # Load image
         img_path = os.path.join(self.coco_root, file_name)
+        
+        if not os.path.exists(img_path):
+            img_path = os.path.join(self.coco_root, os.path.basename(file_name))
+        
         image = cv2.imread(img_path)
         
         if image is None:
-            # Try without subdirectory
-            img_path = os.path.join(os.path.dirname(self.coco_root), file_name)
-            image = cv2.imread(img_path)
-        
-        if image is None:
-            # Return next image if this one fails
+            print(f"⚠️  Failed to load image: {img_path}")
             return self.__getitem__((idx + 1) % len(self))
         
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -248,17 +258,7 @@ class COCOAAmodalDataset(Dataset):
         for ann in anns:
             visible_bbox = ann['visible_bbox']
             amodal_bbox = ann['amodal_bbox']
-            occlude_rate = ann.get('occlude_rate', 0.0)
-            
-            # Validate boxes
-            if visible_bbox[2] <= 0 or visible_bbox[3] <= 0:
-                continue
-            if amodal_bbox[2] <= 0 or amodal_bbox[3] <= 0:
-                continue
-            
-            # Calculate occlusion if not provided
-            if occlude_rate == 0.0:
-                occlude_rate = self._calculate_occlusion_score(visible_bbox, amodal_bbox)
+            occlude_rate = ann['occlude_rate']
             
             visible_boxes.append(visible_bbox)
             amodal_boxes.append(amodal_bbox)
@@ -405,7 +405,7 @@ if __name__ == '__main__':
     
     if len(sys.argv) < 3:
         print("Usage: python cocoa_dataset.py <coco_root> <cocoa_annotation_file>")
-        print("Example: python cocoa_dataset.py coco/train2014 cocoa_annotations.json")
+        print("Example: python cocoa_dataset.py coco/train2014 coco/COCO_amodal_train2014_detectron.json")
         sys.exit(1)
     
     coco_root = sys.argv[1]
@@ -439,5 +439,11 @@ if __name__ == '__main__':
         if num_valid > 0:
             valid_occ = sample['occlusion_scores'][sample['valid_mask'] > 0]
             print(f"  Occlusion scores: min={valid_occ.min():.2f}, max={valid_occ.max():.2f}, mean={valid_occ.mean():.2f}")
+            
+            # Check if amodal boxes are different from visible
+            vis_boxes = sample['visible_boxes'][sample['valid_mask'] > 0]
+            amod_boxes = sample['amodal_boxes'][sample['valid_mask'] > 0]
+            diff = (amod_boxes - vis_boxes).abs().sum()
+            print(f"  Bbox difference (amodal vs visible): {diff:.4f}")
     
     print("\n✅ Dataset loader working correctly!")

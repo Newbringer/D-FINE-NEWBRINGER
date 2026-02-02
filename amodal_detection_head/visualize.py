@@ -1,58 +1,23 @@
 #!/usr/bin/env python3
 """
-Visualization Script for Amodal Detection Predictions
-Shows visible boxes (green), amodal boxes (red), and occlusion scores
+Visualize COCOA Ground Truth Annotations
+Check that dataset loading is working correctly
 """
 
 import os
 import sys
-import argparse
+from pathlib import Path
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from pathlib import Path
 import cv2
 
 # Add project paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT / 'segmentation_sivert'))
-sys.path.insert(0, str(PROJECT_ROOT / 'glass_wall_detection' / 'src'))
 sys.path.insert(0, str(PROJECT_ROOT / 'amodal_detection_head'))
-sys.path.insert(0, str(PROJECT_ROOT / 'src'))
-sys.path.insert(0, str(PROJECT_ROOT))
 
-from ochuman_dataset import OCHumanAmodalDataset
-from amodal_head import AmodalDetectionHead, CombinedDFINEAmodalModel
-from segmentation_sivert.core.models import load_pretrained_dfine, get_actual_backbone_channels
-from model_architecture import SegmentationHead
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='Visualize Amodal Detection Predictions')
-    
-    parser.add_argument('--ochuman-root', required=True,
-                        help='Path to OCHuman dataset root')
-    parser.add_argument('--checkpoint', required=True,
-                        help='Path to trained amodal model checkpoint')
-    parser.add_argument('--dfine-config', default='models/dfine_hgnetv2_x_obj2coco.yml',
-                        help='Path to DFINE config')
-    parser.add_argument('--dfine-checkpoint', default='models/dfine_0.73.pth',
-                        help='Path to DFINE checkpoint')
-    parser.add_argument('--seg-checkpoint', required=True,
-                        help='Path to segmentation checkpoint')
-    parser.add_argument('--split', default='val', choices=['train', 'val'],
-                        help='Dataset split to visualize')
-    parser.add_argument('--num-images', type=int, default=10,
-                        help='Number of images to visualize')
-    parser.add_argument('--output-dir', default='visualizations/amodal',
-                        help='Directory to save visualizations')
-    parser.add_argument('--conf-threshold', type=float, default=0.3,
-                        help='Confidence threshold for showing predictions')
-    parser.add_argument('--device', default='cuda',
-                        help='Device to use')
-    
-    return parser.parse_args()
+from cocoa_dataset import COCOAAmodalDataset
 
 
 def denormalize_image(image_tensor):
@@ -88,286 +53,179 @@ def box_cxcywh_to_xyxy(boxes, img_size):
     return torch.stack([x1, y1, x2, y2], dim=1)
 
 
-def visualize_sample(image, gt_visible, gt_amodal, pred_visible, pred_amodal, 
-                     pred_conf, pred_occ, gt_occ, valid_mask, conf_threshold=0.3):
+def visualize_ground_truth(sample, idx, output_dir='data_check'):
     """
-    Create visualization comparing ground truth and predictions
+    Visualize ground truth annotations
     
     Args:
-        image: [3, H, W] tensor
-        gt_visible: [N, 4] ground truth visible boxes
-        gt_amodal: [N, 4] ground truth amodal boxes
-        pred_visible: [N, 4] predicted visible boxes
-        pred_amodal: [N, 4] predicted amodal boxes
-        pred_conf: [N] prediction confidence scores
-        pred_occ: [N] predicted occlusion scores
-        gt_occ: [N] ground truth occlusion scores
-        valid_mask: [N] binary mask for valid objects
-        conf_threshold: only show predictions above this confidence
+        sample: Sample from dataset
+        idx: Sample index
+        output_dir: Directory to save visualization
     """
-    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Get data
+    image = sample['image']
+    visible_boxes = sample['visible_boxes']
+    amodal_boxes = sample['amodal_boxes']
+    occlusion_scores = sample['occlusion_scores']
+    valid_mask = sample['valid_mask']
+    file_name = sample.get('file_name', f'image_{idx}.jpg')
     
     # Denormalize image
     img_np = denormalize_image(image)
     img_size = image.shape[-1]
     
-    # Ground Truth
-    ax = axes[0]
-    ax.imshow(img_np)
-    ax.set_title('Ground Truth', fontsize=14, fontweight='bold')
-    ax.axis('off')
-    
-    # Get valid ground truth boxes
+    # Get valid boxes
     valid_indices = torch.where(valid_mask > 0)[0]
+    num_people = len(valid_indices)
     
-    if len(valid_indices) > 0:
-        gt_vis_boxes = box_cxcywh_to_xyxy(gt_visible[valid_indices], img_size)
-        gt_amod_boxes = box_cxcywh_to_xyxy(gt_amodal[valid_indices], img_size)
-        gt_occ_scores = gt_occ[valid_indices]
-        
-        for i, idx in enumerate(valid_indices):
-            # Amodal box (red, dashed)
-            x1, y1, x2, y2 = gt_amod_boxes[i]
-            w, h = x2 - x1, y2 - y1
-            rect = patches.Rectangle(
-                (x1, y1), w, h,
-                linewidth=2, edgecolor='red', facecolor='none',
-                linestyle='--', label='Amodal' if i == 0 else ''
-            )
-            ax.add_patch(rect)
-            
-            # Visible box (green, solid)
-            x1, y1, x2, y2 = gt_vis_boxes[i]
-            w, h = x2 - x1, y2 - y1
-            rect = patches.Rectangle(
-                (x1, y1), w, h,
-                linewidth=2, edgecolor='lime', facecolor='none',
-                label='Visible' if i == 0 else ''
-            )
-            ax.add_patch(rect)
-            
-            # Show occlusion score
-            occ_score = gt_occ_scores[i].item()
-            ax.text(x1, y1 - 5, f'Occ: {occ_score:.2f}',
-                   color='white', fontsize=10, fontweight='bold',
-                   bbox=dict(boxstyle='round', facecolor='black', alpha=0.7))
+    if num_people == 0:
+        print(f"⚠️  Sample {idx}: No people found!")
+        return
     
-    ax.legend(loc='upper right')
+    # Convert to pixel coordinates
+    vis_boxes_px = box_cxcywh_to_xyxy(visible_boxes[valid_indices], img_size)
+    amod_boxes_px = box_cxcywh_to_xyxy(amodal_boxes[valid_indices], img_size)
+    occ_scores = occlusion_scores[valid_indices]
     
-    # Predictions
-    ax = axes[1]
+    # Create figure
+    fig, ax = plt.subplots(1, 1, figsize=(12, 12))
     ax.imshow(img_np)
-    ax.set_title('Predictions', fontsize=14, fontweight='bold')
+    ax.set_title(f'Sample {idx}: {num_people} person(s) - Ground Truth\n{Path(file_name).name}', 
+                 fontsize=14, fontweight='bold')
     ax.axis('off')
     
-    # Filter predictions by confidence
-    conf_mask = pred_conf.squeeze() > conf_threshold
-    if conf_mask.any():
-        pred_vis_boxes = box_cxcywh_to_xyxy(pred_visible[conf_mask], img_size)
-        pred_amod_boxes = box_cxcywh_to_xyxy(pred_amodal[conf_mask], img_size)
-        pred_conf_scores = pred_conf[conf_mask].squeeze()
-        pred_occ_scores = pred_occ[conf_mask].squeeze()
+    # Draw boxes
+    for i in range(num_people):
+        # Amodal box (RED, DASHED) - Full person extent
+        x1, y1, x2, y2 = amod_boxes_px[i]
+        w, h = x2 - x1, y2 - y1
+        rect = patches.Rectangle(
+            (x1, y1), w, h,
+            linewidth=3, edgecolor='red', facecolor='none',
+            linestyle='--', label='Amodal (full extent)' if i == 0 else ''
+        )
+        ax.add_patch(rect)
         
-        for i in range(len(pred_vis_boxes)):
-            # Amodal box (red, dashed)
-            x1, y1, x2, y2 = pred_amod_boxes[i]
-            w, h = x2 - x1, y2 - y1
-            rect = patches.Rectangle(
-                (x1, y1), w, h,
-                linewidth=2, edgecolor='red', facecolor='none',
-                linestyle='--', label='Amodal' if i == 0 else ''
-            )
-            ax.add_patch(rect)
-            
-            # Visible box (green, solid)
-            x1, y1, x2, y2 = pred_vis_boxes[i]
-            w, h = x2 - x1, y2 - y1
-            rect = patches.Rectangle(
-                (x1, y1), w, h,
-                linewidth=2, edgecolor='lime', facecolor='none',
-                label='Visible' if i == 0 else ''
-            )
-            ax.add_patch(rect)
-            
-            # Show confidence and occlusion
-            conf = pred_conf_scores[i].item() if pred_conf_scores.dim() > 0 else pred_conf_scores.item()
-            occ = pred_occ_scores[i].item() if pred_occ_scores.dim() > 0 else pred_occ_scores.item()
-            
-            ax.text(x1, y1 - 5, f'Conf: {conf:.2f} | Occ: {occ:.2f}',
-                   color='white', fontsize=10, fontweight='bold',
-                   bbox=dict(boxstyle='round', facecolor='black', alpha=0.7))
-    else:
-        ax.text(0.5, 0.5, 'No predictions above threshold',
-               transform=ax.transAxes, ha='center', va='center',
-               fontsize=16, color='red', fontweight='bold')
+        # Visible box (GREEN, SOLID) - What you can see
+        x1, y1, x2, y2 = vis_boxes_px[i]
+        w, h = x2 - x1, y2 - y1
+        rect = patches.Rectangle(
+            (x1, y1), w, h,
+            linewidth=3, edgecolor='lime', facecolor='none',
+            label='Visible (what you see)' if i == 0 else ''
+        )
+        ax.add_patch(rect)
+        
+        # Show occlusion score
+        occ = occ_scores[i].item()
+        ax.text(x1, y1 - 10, f'Person {i+1}\nOcc: {occ:.2f}',
+               color='white', fontsize=12, fontweight='bold',
+               bbox=dict(boxstyle='round', facecolor='black', alpha=0.8))
     
-    ax.legend(loc='upper right')
+    ax.legend(loc='upper right', fontsize=12)
+    
+    # Add interpretation text
+    info_text = (
+        f"🟢 GREEN (solid) = Visible parts\n"
+        f"🔴 RED (dashed) = Amodal (full person)\n"
+        f"Occlusion score: 0.0 = not occluded, 1.0 = fully hidden"
+    )
+    ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
+           fontsize=11, verticalalignment='top',
+           bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
     
     plt.tight_layout()
-    return fig
-
-
-def load_model(args):
-    """Load the trained amodal detection model"""
-    print("🚀 Loading model...")
     
-    # Load DFINE
-    dfine_model = load_pretrained_dfine(args.dfine_config, args.dfine_checkpoint)
-    backbone_channels = get_actual_backbone_channels(dfine_model)
+    # Save
+    output_path = os.path.join(output_dir, f'gt_sample_{idx:03d}.png')
+    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
     
-    # Load segmentation
-    seg_checkpoint = torch.load(args.seg_checkpoint, map_location='cpu')
-    
-    if 'hyperparameters' in seg_checkpoint:
-        hyper = seg_checkpoint['hyperparameters']
-        feature_dim = hyper.get('feature_dim', 256)
-        num_classes = hyper.get('num_classes', 7)
-    else:
-        feature_dim = 256
-        num_classes = 7
-    
-    segmentation_head = SegmentationHead(
-        in_channels_list=backbone_channels,
-        num_classes=num_classes,
-        feature_dim=feature_dim,
-        dropout_rate=0.1
-    )
-    
-    # Load seg weights
-    if isinstance(seg_checkpoint, dict) and 'model_state_dict' in seg_checkpoint:
-        state_dict = seg_checkpoint['model_state_dict']
-    else:
-        state_dict = seg_checkpoint
-    
-    seg_state_dict = {k.replace('seg_head.', ''): v for k, v in state_dict.items() if 'seg_head' in k}
-    if seg_state_dict:
-        segmentation_head.load_state_dict(seg_state_dict, strict=False)
-    
-    # Create amodal head
-    amodal_head = AmodalDetectionHead(
-        in_channels=backbone_channels[-1],
-        hidden_dim=256,
-        num_classes=2,  # OCHuman: background + person
-        num_queries=100
-    )
-    
-    # Load amodal weights
-    checkpoint = torch.load(args.checkpoint, map_location='cpu')
-    amodal_head.load_state_dict(checkpoint['amodal_head_state_dict'])
-    
-    # Create combined model
-    model = CombinedDFINEAmodalModel(
-        dfine_model=dfine_model,
-        segmentation_head=segmentation_head,
-        amodal_head=amodal_head
-    )
-    
-    print(f"✅ Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
-    print(f"   Best loss: {checkpoint.get('best_loss', 'unknown')}")
-    
-    return model
+    print(f"✅ Sample {idx}: {num_people} person(s), Occ range: [{occ_scores.min():.2f}, {occ_scores.max():.2f}]")
+    print(f"   Saved: {output_path}")
 
 
 def main():
-    args = parse_args()
+    """Main function"""
+    import argparse
     
-    print("=" * 80)
-    print("🎨 VISUALIZING AMODAL DETECTION PREDICTIONS")
-    print("=" * 80)
+    parser = argparse.ArgumentParser(description='Visualize COCOA Ground Truth')
+    parser.add_argument('--coco-root', default='coco/train2014',
+                        help='Path to COCO images')
+    parser.add_argument('--cocoa-ann', default='coco/COCO_amodal_train2014_detectron.json',
+                        help='Path to COCOA annotation JSON')
+    parser.add_argument('--num-samples', type=int, default=100,
+                        help='Number of samples to visualize')
+    parser.add_argument('--output-dir', default='data_check',
+                        help='Output directory for visualizations')
+    args = parser.parse_args()
     
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    print(f"🚀 Using device: {device}")
-    
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    print("="*80)
+    print("🔍 VISUALIZING COCOA GROUND TRUTH ANNOTATIONS")
+    print("="*80)
+    print(f"📂 COCO images: {args.coco_root}")
+    print(f"📂 COCOA annotations: {args.cocoa_ann}")
+    print(f"📊 Samples to visualize: {args.num_samples}")
+    print("="*80)
     
     # Load dataset
-    print(f"\n📊 Loading OCHuman {args.split} dataset...")
-    dataset = OCHumanAmodalDataset(
-        root_dir=args.ochuman_root,
-        split=args.split,
+    print("\n📦 Loading COCOA dataset...")
+    dataset = COCOAAmodalDataset(
+        coco_root=args.coco_root,
+        cocoa_annotation_file=args.cocoa_ann,
+        split='train',
         image_size=640,
         max_objects=50,
-        augment=False
+        augment=False,
+        person_only=True
     )
     
-    # Load model
-    model = load_model(args)
-    model = model.to(device)
-    model.eval()
+    if len(dataset) == 0:
+        print("❌ No samples found in dataset!")
+        return
     
+    print(f"\n✅ Dataset loaded: {len(dataset)} images")
     print(f"\n🎨 Creating visualizations...")
-    print(f"   Confidence threshold: {args.conf_threshold}")
-    print(f"   Number of images: {args.num_images}")
+    print("-"*80)
     
-    # Process images
-    with torch.no_grad():
-        for i in range(min(args.num_images, len(dataset))):
-            print(f"\n📸 Processing image {i+1}/{args.num_images}...")
-            
-            # Get sample
-            sample = dataset[i]
-            image = sample['image'].unsqueeze(0).to(device)
-            
-            # Get ground truth
-            gt_visible = sample['visible_boxes']
-            gt_amodal = sample['amodal_boxes']
-            gt_occ = sample['occlusion_scores']
-            valid_mask = sample['valid_mask']
-            
-            num_valid = valid_mask.sum().item()
-            print(f"   Ground truth objects: {num_valid}")
-            
-            if num_valid > 0:
-                valid_occ = gt_occ[valid_mask > 0]
-                print(f"   Occlusion range: {valid_occ.min():.2f} - {valid_occ.max():.2f}")
-            
-            # Get predictions
-            outputs = model(image)
-            
-            pred_visible = outputs['visible_boxes'][0].cpu()
-            pred_amodal = outputs['amodal_boxes'][0].cpu()
-            pred_conf = outputs['confidence_scores'][0].cpu()
-            pred_occ = outputs['occlusion_scores'][0].cpu()
-            
-            # Count predictions above threshold
-            num_preds = (pred_conf.squeeze() > args.conf_threshold).sum().item()
-            print(f"   Predictions (conf > {args.conf_threshold}): {num_preds}")
-            
-            # Create visualization
-            fig = visualize_sample(
-                sample['image'],
-                gt_visible,
-                gt_amodal,
-                pred_visible,
-                pred_amodal,
-                pred_conf,
-                pred_occ,
-                gt_occ,
-                valid_mask,
-                conf_threshold=args.conf_threshold
-            )
-            
-            # Save
-            filename = sample.get('file_name', f'image_{i:04d}.jpg')
-            output_path = os.path.join(args.output_dir, f'viz_{i:04d}_{Path(filename).stem}.png')
-            fig.savefig(output_path, dpi=150, bbox_inches='tight')
-            plt.close(fig)
-            
-            print(f"   ✅ Saved: {output_path}")
+    # Visualize samples
+    num_samples = min(args.num_samples, len(dataset))
     
-    print(f"\n🎉 Visualization complete!")
-    print(f"📁 Saved to: {args.output_dir}")
+    # Try to find samples with varying occlusion levels
+    samples_to_viz = []
     
-    # Print summary statistics
-    print(f"\n📊 Summary:")
-    print(f"   Images processed: {min(args.num_images, len(dataset))}")
-    print(f"   Output directory: {args.output_dir}")
-    print(f"\n💡 Interpretation Guide:")
-    print(f"   🟢 Green boxes = Visible parts (what you can see)")
-    print(f"   🔴 Red dashed boxes = Amodal (full person including occluded parts)")
-    print(f"   Occlusion score: 0 = not occluded, 1 = fully occluded")
-    print(f"   Confidence: Model's certainty in the detection")
+    # Get some random samples
+    import random
+    indices = random.sample(range(len(dataset)), min(num_samples * 3, len(dataset)))
+    
+    for idx in indices:
+        sample = dataset[idx]
+        num_valid = sample['valid_mask'].sum().item()
+        
+        if num_valid > 0:
+            samples_to_viz.append((idx, sample))
+            if len(samples_to_viz) >= num_samples:
+                break
+    
+    # Visualize
+    for i, (idx, sample) in enumerate(samples_to_viz):
+        print(f"\n📸 Visualizing sample {i+1}/{len(samples_to_viz)} (dataset index {idx})...")
+        visualize_ground_truth(sample, idx, args.output_dir)
+    
+    print("\n" + "="*80)
+    print(f"✅ Visualization complete!")
+    print(f"📁 Check images in: {args.output_dir}/")
+    print("="*80)
+    
+    print("\n💡 What to look for:")
+    print("   ✅ Green boxes should tightly fit visible person parts")
+    print("   ✅ Red boxes should be larger, showing full person extent")
+    print("   ✅ Occlusion score should be higher when more person is hidden")
+    print("   ✅ Both boxes should align reasonably well")
+    print("\n   ❌ If boxes are wildly off or both identical → data loading issue")
+    print("   ❌ If images don't load → check file paths")
 
 
 if __name__ == '__main__':

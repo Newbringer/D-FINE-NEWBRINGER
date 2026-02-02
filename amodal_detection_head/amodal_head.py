@@ -23,8 +23,8 @@ class AmodalDetectionHead(nn.Module):
     def __init__(self, 
                  in_channels: int = 384,
                  hidden_dim: int = 256,
-                 num_classes: int = 7,  # KINS categories
-                 num_queries: int = 300):  # Number of detection queries
+                 num_classes: int = 2,  # KINS categories
+                 num_queries: int = 100):  # Number of detection queries
         super().__init__()
         
         self.num_classes = num_classes
@@ -383,8 +383,8 @@ def create_amodal_model(dfine_model, segmentation_head):
     amodal_head = AmodalDetectionHead(
         in_channels=in_channels,
         hidden_dim=256,
-        num_classes=7,  # KINS: cyclist, pedestrian, car, tram, truck, van, misc
-        num_queries=300
+        num_classes=2,  # COCOA: background + person
+        num_queries=100
     )
     
     model = CombinedDFINEAmodalModel(
