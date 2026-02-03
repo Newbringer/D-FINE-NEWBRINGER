@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-COCOA Dataset for HUMANS ONLY
-Simple, clean, no BS - just human amodal detection
+COCOA Dataset - Humans Only, Occlusion-focused
+Clean implementation for amodal detection training
 """
 
 import os
@@ -10,63 +10,93 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 import cv2
-from typing import Dict
+from typing import Dict, List
 import albumentations as A
+
+
+# Complete list of INDIVIDUAL human categories from COCOA
+# Excludes: crowds, groups, audiences, body parts
+HUMAN_CATEGORIES = {
+    # Basic humans
+    'man', 'Man', 'men', 'Men',
+    'woman', 'Woman', 'women', 'Women', 'weman', 'Weoman', 'wwoman',
+    'boy', 'Boy', 'Boys', 'Bboy',
+    'girl', 'Girl', 'girls',
+    'child', 'Child', 'children', 'Chlldren', 'chlid',
+    'baby', 'Baby', 'boby',
+    'people', 'People', 'peoples', 'Peoples',
+    'person', 'Person',
+    'Lady',
+    'Kid', 'kid',
+    'Old Man',
+    'Old Woman',
+    'the man',
+    'mom',
+    
+    # Roles/Occupations/Activities
+    'player', 'Player',
+    'athlete',
+    'waiter',
+    'plumber',
+    'skater',
+    'Ice Skating', 'ice skating',
+    'skiier',
+    'model', 'models',
+    'supporter',
+    'timekeeper',
+    'sitter',
+    'Camera man',
+    'Snow Surfing Boy',
+}
 
 
 class COCOAAmodalDataset(Dataset):
     """
-    COCOA Dataset for HUMANS ONLY
-    - Uses Official COCOA (has human categories like man, woman, boy, girl)
-    - Falls back to Detectron COCOA for images not in Official
-    - Filters STRICTLY for humans (no mangoes, snowmen, etc.)
-    - Optional: Train ONLY on occluded samples (min_occlusion > 0)
+    COCOA Dataset for Amodal Human Detection
+    - Filters strictly for individual human categories
+    - Trains only on occluded samples (min_occlusion > 0)
+    - Returns visible + amodal boxes for offset prediction
     """
     
     def __init__(self,
                  image_dir: str,
-                 official_ann_file: str,
-                 detectron_ann_file: str = None,
+                 ann_file: str,
                  split: str = 'train',
                  image_size: int = 640,
                  max_objects: int = 50,
                  augment: bool = True,
-                 min_occlusion: float = 0.0,
+                 min_occlusion: float = 0.05,
                  min_area: int = 400):
         """
         Args:
-            official_ann_file: Official COCOA (has human categories)
-            detectron_ann_file: Detectron COCOA (backup for extra data)
-            min_occlusion: 0.0=all samples, 0.05=slightly occluded+, 0.1=clearly occluded
+            image_dir: Path to COCO images (train2014/val2014)
+            ann_file: Path to COCOA annotation JSON
+            min_occlusion: Minimum occlusion rate (0.05 = slightly occluded)
+            min_area: Minimum box area in pixels after resize
         """
         self.image_dir = image_dir
+        self.ann_file = ann_file
         self.split = split
         self.image_size = image_size
         self.max_objects = max_objects
         self.min_occlusion = min_occlusion
         self.min_area = min_area
-        self.use_detectron = detectron_ann_file is not None
-
-        print(f"📂 Loading COCOA {split} - HUMANS ONLY")
-        print(f"   Official: {official_ann_file}")
-        if self.use_detectron:
-            print(f"   Detectron backup: {detectron_ann_file}")
-        print(f"   Min occlusion: {min_occlusion:.2f}")
         
-        # Load Official COCOA
-        with open(official_ann_file, 'r') as f:
-            self.official_data = json.load(f)
+        print(f"\n{'='*80}")
+        print(f"📂 Loading COCOA {split} - INDIVIDUAL HUMANS ONLY")
+        print(f"{'='*80}")
+        print(f"Annotation file: {ann_file}")
+        print(f"Min occlusion: {min_occlusion:.2f}")
+        print(f"Min area: {min_area}px²")
         
-        # Load Detectron COCOA if provided
-        self.detectron_data = None
-        if self.use_detectron:
-            with open(detectron_ann_file, 'r') as f:
-                self.detectron_data = json.load(f)
+        # Load annotations
+        with open(ann_file, 'r') as f:
+            self.data = json.load(f)
         
         # Build dataset
         self._build_dataset()
         
-        # Normalization
+        # Normalization (ImageNet stats)
         self.mean = np.array([0.485, 0.456, 0.406])
         self.std = np.array([0.229, 0.224, 0.225])
         
@@ -83,49 +113,14 @@ class COCOAAmodalDataset(Dataset):
         else:
             self.transforms = None
         
-        print(f"✅ Dataset loaded:")
+        print(f"\n✅ Dataset ready:")
         print(f"   Images: {len(self.valid_images)}")
-        if self.use_detectron:
-            print(f"   From Official: {self.from_official}")
-            print(f"   From Detectron: {self.from_detectron}")
-        print(f"   Human annotations: {self.total_annotations}")
-        if len(self.valid_images) > 0:
-            print(f"   Avg per image: {self.total_annotations / len(self.valid_images):.2f}")
+        print(f"   Human annotations: {self.total_humans}")
+        print(f"   Avg humans/image: {self.total_humans / max(len(self.valid_images), 1):.2f}")
+        print(f"{'='*80}\n")
     
-    def _is_human(self, name: str) -> bool:
-        """STRICT human filtering - no mangoes allowed!"""
-        name_lower = name.lower().strip()
-        
-        # Exact matches ONLY
-        human_exact = {
-            'person', 'people', 'peoples', 'man', 'woman', 'boy', 'girl',
-            'child', 'children', 'human', 'humans', 'guy', 'lady', 'kid', 'kids',
-            'men', 'women', 'boys', 'girls', 'ladies'
-        }
-        
-        # Blacklist - DO NOT include these
-        blacklist = {
-            'mango', 'mangoes', 'ottoman', 'snowman', 'snowmen',
-            'statue', 'carton', 'comode'
-        }
-        
-        # Check blacklist first
-        if any(bad in name_lower for bad in blacklist):
-            return False
-        
-        # Exact match
-        if name_lower in human_exact:
-            return True
-        
-        # Word-level match (for "old man", "young boy", etc.)
-        words = name_lower.replace('-', ' ').replace('_', ' ').split()
-        if any(w in human_exact for w in words):
-            return True
-        
-        return False
-    
-    def _polygon_to_bbox(self, polygon_coords):
-        """Convert polygon to [x, y, w, h]"""
+    def _polygon_to_bbox(self, polygon_coords: List[float]) -> List[float]:
+        """Convert polygon coordinates to [x, y, w, h] bbox"""
         if not polygon_coords or len(polygon_coords) < 6:
             return None
         
@@ -148,184 +143,117 @@ class COCOAAmodalDataset(Dataset):
         except:
             return None
     
-    def _estimate_visible_bbox(self, amodal_bbox, occlude_rate):
-        """Estimate visible bbox from amodal + occlusion rate"""
-        x, y, w, h = amodal_bbox
-        
-        # No occlusion = visible same as amodal
-        if occlude_rate < 0.05:
-            return amodal_bbox
-        
-        # Estimate visible portion (shrink from center)
-        scale = np.sqrt(1.0 - occlude_rate)
-        cx, cy = x + w/2, y + h/2
-        new_w = w * scale
-        new_h = h * scale
-        
-        return [cx - new_w/2, cy - new_h/2, new_w, new_h]
+    def _decode_rle_to_bbox(self, rle_mask: dict, img_width: int, img_height: int) -> List[float]:
+        """Decode RLE mask to bbox [x, y, w, h]"""
+        try:
+            from pycocotools import mask as mask_util
+            
+            rle = {
+                'counts': rle_mask['counts'].encode('utf-8') if isinstance(rle_mask['counts'], str) else rle_mask['counts'],
+                'size': rle_mask['size']
+            }
+            
+            binary_mask = mask_util.decode(rle)
+            
+            # Find bbox from mask
+            rows = np.any(binary_mask, axis=1)
+            cols = np.any(binary_mask, axis=0)
+            
+            if not rows.any() or not cols.any():
+                return None
+            
+            y_min, y_max = np.where(rows)[0][[0, -1]]
+            x_min, x_max = np.where(cols)[0][[0, -1]]
+            
+            return [float(x_min), float(y_min), float(x_max - x_min + 1), float(y_max - y_min + 1)]
+        except:
+            return None
     
     def _build_dataset(self):
-        """Build dataset from COCOA - HUMANS ONLY, with Detectron backup"""
+        """Build dataset from COCOA annotations"""
         self.valid_images = []
         self.img_to_anns = {}
-        self.total_annotations = 0
-        self.from_official = 0
-        self.from_detectron = 0
+        self.total_humans = 0
         
-        # Get images from Official
-        official_images = self.official_data.get('images', [])
-        official_annotations = self.official_data.get('annotations', [])
+        # Build image lookup
+        img_id_to_info = {img['id']: img for img in self.data.get('images', [])}
         
-        img_id_to_info = {img['id']: img for img in official_images}
-        
-        # Process Official COCOA - HUMANS ONLY
-        official_img_ids_with_humans = set()
-        
-        for ann in official_annotations:
+        # Process annotations
+        for ann in self.data.get('annotations', []):
             img_id = ann.get('image_id')
-            if img_id is None or img_id not in img_id_to_info:
+            if img_id not in img_id_to_info:
                 continue
             
             img_info = img_id_to_info[img_id]
+            img_width = img_info['width']
+            img_height = img_info['height']
             
             regions = ann.get('regions', [])
-            if not regions:
-                continue
-            
             human_regions = []
             
             for region in regions:
-                obj_name = region.get('name', '').strip()
+                name = region.get('name', '').strip()
                 
-                # STRICT human filtering
-                if not self._is_human(obj_name):
+                # Filter: only individual humans
+                if name not in HUMAN_CATEGORIES:
                     continue
                 
-                # Get amodal bbox from segmentation
-                seg = region.get('segmentation', [])
-                amodal_bbox = self._polygon_to_bbox(seg)
+                # Get occlusion rate
+                occlude_rate = region.get('occlude_rate', 0)
+                if occlude_rate is None:
+                    occlude_rate = 0
+                occlude_rate = float(occlude_rate)
+                occlude_rate = max(0.0, min(1.0, occlude_rate))
+                
+                # Filter: only occluded samples
+                if occlude_rate < self.min_occlusion:
+                    continue
+                
+                # Get amodal bbox from full segmentation
+                segmentation = region.get('segmentation', [])
+                amodal_bbox = self._polygon_to_bbox(segmentation)
                 if amodal_bbox is None:
                     continue
                 
-                # Get occlusion
-                occ = region.get('occlude_rate', 0)
-                if occ is None:
-                    occ = 0
-                occ = float(occ)
-                occ = max(0.0, min(1.0, occ))
-                
-                # Filter by minimum occlusion
-                if occ < self.min_occlusion:
-                    continue
-                
-                # Estimate visible bbox
-                visible_bbox = self._estimate_visible_bbox(amodal_bbox, occ)
+                # Get visible bbox from visible_mask (if available)
+                visible_mask = region.get('visible_mask')
+                if visible_mask:
+                    visible_bbox = self._decode_rle_to_bbox(visible_mask, img_width, img_height)
+                    if visible_bbox is None:
+                        # Fallback: estimate from occlusion
+                        scale = np.sqrt(1.0 - occlude_rate)
+                        x, y, w, h = amodal_bbox
+                        cx, cy = x + w/2, y + h/2
+                        new_w, new_h = w * scale, h * scale
+                        visible_bbox = [cx - new_w/2, cy - new_h/2, new_w, new_h]
+                else:
+                    # No visible mask: estimate from occlusion
+                    scale = np.sqrt(1.0 - occlude_rate)
+                    x, y, w, h = amodal_bbox
+                    cx, cy = x + w/2, y + h/2
+                    new_w, new_h = w * scale, h * scale
+                    visible_bbox = [cx - new_w/2, cy - new_h/2, new_w, new_h]
                 
                 human_regions.append({
                     'visible_bbox': visible_bbox,
                     'amodal_bbox': amodal_bbox,
-                    'occlude_rate': occ,
-                    'name': obj_name,
-                    'source': 'official'
+                    'occlude_rate': occlude_rate,
+                    'category': name
                 })
             
+            # Add image if it has human annotations
             if len(human_regions) > 0:
-                official_img_ids_with_humans.add(img_id)
-                
                 if img_id not in self.img_to_anns:
                     self.valid_images.append({
                         'image_id': img_id,
                         'file_name': img_info['file_name'],
                         'width': img_info['width'],
-                        'height': img_info['height'],
-                        'source': 'official'
+                        'height': img_info['height']
                     })
                     self.img_to_anns[img_id] = []
-                    self.from_official += 1
                 
                 self.img_to_anns[img_id].extend(human_regions)
-                self.total_annotations += len(human_regions)
-        
-        # Process Detectron COCOA as backup (for images not in Official or without humans)
-        if self.use_detectron and self.detectron_data:
-            detectron_images = {img['id']: img for img in self.detectron_data.get('images', [])}
-            detectron_annotations = self.detectron_data.get('annotations', [])
-            
-            # Group detectron annotations by image (FILTER FOR PERSON ONLY!)
-            detectron_by_img = {}
-            for ann in detectron_annotations:
-                # FILTER: Only use category_id == 1 (person in COCO)
-                if ann.get('category_id') != 1:
-                    continue
-                    
-                img_id = ann.get('image_id')
-                if img_id not in detectron_by_img:
-                    detectron_by_img[img_id] = []
-                detectron_by_img[img_id].append(ann)
-            
-            # Add detectron data for images NOT in official humans
-            for img_id, anns in detectron_by_img.items():
-                # Skip if Official already has humans for this image
-                if img_id in official_img_ids_with_humans:
-                    continue
-                
-                if img_id not in detectron_images:
-                    continue
-                
-                img_info = detectron_images[img_id]
-                
-                detectron_regions = []
-                
-                for ann in anns:
-                    # Get occlusion
-                    occ = ann.get('occlude_rate', 0)
-                    if occ is None:
-                        occ = 0
-                    occ = float(occ)
-                    occ = max(0.0, min(1.0, occ))
-                    
-                    # Filter by minimum occlusion
-                    if occ < self.min_occlusion:
-                        continue
-                    
-                    # Get amodal bbox (pre-computed)
-                    amodal_bbox = ann.get('bbox')
-                    if not amodal_bbox or len(amodal_bbox) != 4:
-                        continue
-                    
-                    amodal_bbox = tuple(amodal_bbox)
-                    
-                    # Try to get visible bbox from visible_mask
-                    visible_mask = ann.get('visible_mask')
-                    if visible_mask and len(visible_mask) >= 6:
-                        visible_bbox = self._polygon_to_bbox(visible_mask)
-                        if visible_bbox is None:
-                            visible_bbox = self._estimate_visible_bbox(amodal_bbox, occ)
-                    else:
-                        visible_bbox = self._estimate_visible_bbox(amodal_bbox, occ)
-                    
-                    detectron_regions.append({
-                        'visible_bbox': visible_bbox,
-                        'amodal_bbox': amodal_bbox,
-                        'occlude_rate': occ,
-                        'name': 'person',
-                        'source': 'detectron'
-                    })
-                
-                if len(detectron_regions) > 0:
-                    if img_id not in self.img_to_anns:
-                        self.valid_images.append({
-                            'image_id': img_id,
-                            'file_name': img_info['file_name'],
-                            'width': img_info['width'],
-                            'height': img_info['height'],
-                            'source': 'detectron'
-                        })
-                        self.img_to_anns[img_id] = []
-                        self.from_detectron += 1
-                    
-                    self.img_to_anns[img_id].extend(detectron_regions)
-                    self.total_annotations += len(detectron_regions)
+                self.total_humans += len(human_regions)
     
     def __len__(self):
         return len(self.valid_images)
@@ -337,9 +265,6 @@ class COCOAAmodalDataset(Dataset):
         
         # Load image
         img_path = os.path.join(self.image_dir, file_name)
-        if not os.path.exists(img_path):
-            img_path = os.path.join(self.image_dir, os.path.basename(file_name))
-        
         image = cv2.imread(img_path)
         if image is None:
             return self.__getitem__((idx + 1) % len(self))
@@ -352,14 +277,14 @@ class COCOAAmodalDataset(Dataset):
         
         visible_boxes = []
         amodal_boxes = []
-        class_labels = []
         occlusion_scores = []
+        class_labels = []
         
         for ann in anns:
             visible_boxes.append(ann['visible_bbox'])
             amodal_boxes.append(ann['amodal_bbox'])
-            class_labels.append(1)
             occlusion_scores.append(ann['occlude_rate'])
+            class_labels.append(1)  # All humans = class 1
         
         if len(visible_boxes) == 0:
             return self.__getitem__((idx + 1) % len(self))
@@ -376,13 +301,14 @@ class COCOAAmodalDataset(Dataset):
                 visible_boxes = list(transformed['bboxes'])
                 class_labels = transformed['class_labels']
                 
+                # Keep same number of amodal boxes
                 if len(visible_boxes) < len(amodal_boxes):
                     amodal_boxes = amodal_boxes[:len(visible_boxes)]
                     occlusion_scores = occlusion_scores[:len(visible_boxes)]
             except:
                 pass
         
-        # Resize
+        # Resize image
         image = cv2.resize(image, (self.image_size, self.image_size))
         
         # Normalize
@@ -390,103 +316,87 @@ class COCOAAmodalDataset(Dataset):
         image = (image - self.mean) / self.std
         image = torch.from_numpy(image).permute(2, 0, 1).float()
         
-        # Convert to normalized [cx, cy, w, h]
+        # Convert boxes to normalized [x1, y1, x2, y2] format
         scale_x = self.image_size / orig_w
         scale_y = self.image_size / orig_h
         
         visible_boxes_norm = []
         amodal_boxes_norm = []
+        valid_occlusion = []
         
-        for vis_box, amod_box in zip(visible_boxes, amodal_boxes):
-            # Scale visible
+        for vis_box, amod_box, occ in zip(visible_boxes, amodal_boxes, occlusion_scores):
+            # Scale visible box
             vis_x, vis_y, vis_w, vis_h = vis_box
-            vis_x *= scale_x
-            vis_y *= scale_y
-            vis_w *= scale_x
-            vis_h *= scale_y
+            vis_x1 = vis_x * scale_x
+            vis_y1 = vis_y * scale_y
+            vis_x2 = (vis_x + vis_w) * scale_x
+            vis_y2 = (vis_y + vis_h) * scale_y
             
-            # Scale amodal
+            # Scale amodal box
             amod_x, amod_y, amod_w, amod_h = amod_box
-            amod_x *= scale_x
-            amod_y *= scale_y
-            amod_w *= scale_x
-            amod_h *= scale_y
+            amod_x1 = amod_x * scale_x
+            amod_y1 = amod_y * scale_y
+            amod_x2 = (amod_x + amod_w) * scale_x
+            amod_y2 = (amod_y + amod_h) * scale_y
             
             # Filter by minimum area
-            if vis_w * vis_h < self.min_area or amod_w * amod_h < self.min_area:
+            vis_area = (vis_x2 - vis_x1) * (vis_y2 - vis_y1)
+            amod_area = (amod_x2 - amod_x1) * (amod_y2 - amod_y1)
+            
+            if vis_area < self.min_area or amod_area < self.min_area:
                 continue
             
-            # To center format and normalize
-            vis_cx = (vis_x + vis_w / 2) / self.image_size
-            vis_cy = (vis_y + vis_h / 2) / self.image_size
-            vis_w_norm = vis_w / self.image_size
-            vis_h_norm = vis_h / self.image_size
+            # Normalize to [0, 1]
+            vis_x1_norm = np.clip(vis_x1 / self.image_size, 0, 1)
+            vis_y1_norm = np.clip(vis_y1 / self.image_size, 0, 1)
+            vis_x2_norm = np.clip(vis_x2 / self.image_size, 0, 1)
+            vis_y2_norm = np.clip(vis_y2 / self.image_size, 0, 1)
             
-            amod_cx = (amod_x + amod_w / 2) / self.image_size
-            amod_cy = (amod_y + amod_h / 2) / self.image_size
-            amod_w_norm = amod_w / self.image_size
-            amod_h_norm = amod_h / self.image_size
+            amod_x1_norm = np.clip(amod_x1 / self.image_size, 0, 1)
+            amod_y1_norm = np.clip(amod_y1 / self.image_size, 0, 1)
+            amod_x2_norm = np.clip(amod_x2 / self.image_size, 0, 1)
+            amod_y2_norm = np.clip(amod_y2 / self.image_size, 0, 1)
             
-            # Clip
-            vis_cx = np.clip(vis_cx, 0, 1)
-            vis_cy = np.clip(vis_cy, 0, 1)
-            vis_w_norm = np.clip(vis_w_norm, 0, 1)
-            vis_h_norm = np.clip(vis_h_norm, 0, 1)
-            
-            amod_cx = np.clip(amod_cx, 0, 1)
-            amod_cy = np.clip(amod_cy, 0, 1)
-            amod_w_norm = np.clip(amod_w_norm, 0, 1)
-            amod_h_norm = np.clip(amod_h_norm, 0, 1)
-            
-            visible_boxes_norm.append([vis_cx, vis_cy, vis_w_norm, vis_h_norm])
-            amodal_boxes_norm.append([amod_cx, amod_cy, amod_w_norm, amod_h_norm])
+            visible_boxes_norm.append([vis_x1_norm, vis_y1_norm, vis_x2_norm, vis_y2_norm])
+            amodal_boxes_norm.append([amod_x1_norm, amod_y1_norm, amod_x2_norm, amod_y2_norm])
+            valid_occlusion.append(occ)
         
-        # Pad or truncate
+        # Pad or truncate to max_objects
         num_objects = len(visible_boxes_norm)
         
         if num_objects > self.max_objects:
             visible_boxes_norm = visible_boxes_norm[:self.max_objects]
             amodal_boxes_norm = amodal_boxes_norm[:self.max_objects]
-            occlusion_scores = occlusion_scores[:self.max_objects]
+            valid_occlusion = valid_occlusion[:self.max_objects]
             num_objects = self.max_objects
         
+        # Create tensors
         visible_boxes_tensor = torch.zeros(self.max_objects, 4)
         amodal_boxes_tensor = torch.zeros(self.max_objects, 4)
-        class_labels_tensor = torch.zeros(self.max_objects, dtype=torch.long)
         occlusion_tensor = torch.zeros(self.max_objects)
         valid_mask = torch.zeros(self.max_objects)
         
         if num_objects > 0:
             visible_boxes_tensor[:num_objects] = torch.tensor(visible_boxes_norm, dtype=torch.float32)
             amodal_boxes_tensor[:num_objects] = torch.tensor(amodal_boxes_norm, dtype=torch.float32)
-            class_labels_tensor[:num_objects] = 1
-            occlusion_tensor[:num_objects] = torch.tensor(occlusion_scores[:num_objects], dtype=torch.float32)
+            occlusion_tensor[:num_objects] = torch.tensor(valid_occlusion, dtype=torch.float32)
             valid_mask[:num_objects] = 1.0
         
         return {
             'image': image,
             'visible_boxes': visible_boxes_tensor,
             'amodal_boxes': amodal_boxes_tensor,
-            'class_labels': class_labels_tensor,
             'occlusion_scores': occlusion_tensor,
-            'valid_mask': valid_mask,
+            'valid_mask': valid_mask
         }
 
 
 def collate_fn(batch):
     """Custom collate function"""
-    images = torch.stack([item['image'] for item in batch])
-    visible_boxes = torch.stack([item['visible_boxes'] for item in batch])
-    amodal_boxes = torch.stack([item['amodal_boxes'] for item in batch])
-    class_labels = torch.stack([item['class_labels'] for item in batch])
-    occlusion_scores = torch.stack([item['occlusion_scores'] for item in batch])
-    valid_mask = torch.stack([item['valid_mask'] for item in batch])
-    
     return {
-        'image': images,
-        'visible_boxes': visible_boxes,
-        'amodal_boxes': amodal_boxes,
-        'class_labels': class_labels,
-        'occlusion_scores': occlusion_scores,
-        'valid_mask': valid_mask
+        'image': torch.stack([item['image'] for item in batch]),
+        'visible_boxes': torch.stack([item['visible_boxes'] for item in batch]),
+        'amodal_boxes': torch.stack([item['amodal_boxes'] for item in batch]),
+        'occlusion_scores': torch.stack([item['occlusion_scores'] for item in batch]),
+        'valid_mask': torch.stack([item['valid_mask'] for item in batch])
     }
