@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Test DFINE detection only - verify both baseline and amodal-trained models
-Tests just the detection part before moving to amodal head visualization
+Test DFINE detection - verify baseline and amodal-trained models
+Tests detection capabilities before amodal head visualization
+FIXED: Properly loads segmentation model architecture
 """
 
 import os
@@ -15,25 +16,100 @@ import matplotlib.patches as patches
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / 'glass_wall_detection' / 'src'))
 sys.path.insert(0, str(PROJECT_ROOT / 'segmentation_sivert'))
 sys.path.insert(0, str(PROJECT_ROOT / 'src'))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def load_segmentation_model(config_path, state_dict, device):
+    """Load DFINE segmentation model (used by dfine_0.73.pth and amodal checkpoints)"""
+    # Import architecture components
+    from model_architecture import SegmentationHead, DFineWithSegmentation
+    
+    # Load base DFINE config
+    try:
+        from src.core import YAMLConfig
+    except:
+        from core import YAMLConfig
+    
+    print(f"   Loading config: {config_path}")
+    cfg = YAMLConfig(str(config_path))
+    base_model = cfg.model
+    
+    # Get backbone channels
+    base_model.eval()
+    with torch.no_grad():
+        dummy_input = torch.randn(1, 3, 640, 640)
+        backbone_features = base_model.backbone(dummy_input)
+        backbone_channels = [feat.shape[1] for feat in backbone_features]
+    
+    print(f"   Backbone channels: {backbone_channels}")
+    
+    # Infer feature_dim from checkpoint
+    feature_dim = 256  # default
+    for key in state_dict.keys():
+        if 'seg_head.fpn.lateral_convs.0.weight' in key:
+            feature_dim = state_dict[key].shape[0]
+            break
+        elif 'seg_head.decoder.0.weight' in key:
+            feature_dim = state_dict[key].shape[1]
+            break
+    
+    print(f"   Feature dim: {feature_dim}")
+    
+    # Create segmentation head
+    seg_head = SegmentationHead(
+        in_channels_list=backbone_channels,
+        num_classes=7,  # Pascal Person Parts
+        feature_dim=feature_dim,
+        dropout_rate=0.1
+    )
+    
+    # Create combined model
+    model = DFineWithSegmentation(
+        dfine_model=base_model,
+        seg_head=seg_head,
+        freeze_detection=False  # Not training
+    )
+    
+    # Load weights
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    
+    if missing:
+        print(f"   ⚠️  Missing keys: {len(missing)}")
+    if unexpected:
+        print(f"   ⚠️  Unexpected keys: {len(unexpected)}")
+    
+    # For testing, we only need the DFINE part
+    model = model.dfine_model
+    model = model.to(device)
+    model.eval()
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"   ✅ DFINE model extracted - {total_params:,} parameters")
+    
+    return model
+
+
 def load_dfine_model(config_path, checkpoint_path, device):
-    """Load DFINE model, handling both standard and amodal checkpoints"""
+    """Load DFINE model, handling standard, segmentation, and amodal checkpoints"""
     print(f"\n📦 Loading model from: {checkpoint_path}")
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     
-    # Extract state dict (prefer EMA if available)
+    # Extract state dict
     if 'ema' in checkpoint and 'module' in checkpoint['ema']:
         state_dict = checkpoint['ema']['module']
         print("   Using EMA weights")
     elif 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
         print("   Using model_state_dict")
+    elif 'dfine_model' in checkpoint:
+        # This is an amodal checkpoint with separate dfine_model key
+        state_dict = checkpoint['dfine_model']
+        print("   Using dfine_model from amodal checkpoint")
     elif 'model' in checkpoint:
         state_dict = checkpoint['model']
         print("   Using model weights")
@@ -41,27 +117,19 @@ def load_dfine_model(config_path, checkpoint_path, device):
         state_dict = checkpoint
         print("   Using checkpoint directly")
     
-    # Check if this is an amodal checkpoint (has amodal_head.* or dfine_model.*)
-    has_amodal = any('amodal_head.' in key for key in state_dict.keys())
+    # Check what type of checkpoint this is
+    has_seg_head = any('seg_head.' in key for key in state_dict.keys())
     has_dfine_prefix = any('dfine_model.' in key for key in state_dict.keys())
+    has_amodal = any('amodal_head.' in key for key in state_dict.keys())
     
-    if has_amodal or has_dfine_prefix:
-        print("   Detected amodal training checkpoint - extracting DFINE weights...")
-        # Extract only dfine_model.* weights and remove prefix
-        dfine_weights = {}
-        for key, value in state_dict.items():
-            if key.startswith('dfine_model.'):
-                new_key = key[len('dfine_model.'):]
-                dfine_weights[new_key] = value
-        
-        if len(dfine_weights) == 0:
-            print("   ⚠️  No dfine_model.* prefix found, extracting non-amodal weights...")
-            dfine_weights = {k: v for k, v in state_dict.items() if not k.startswith('amodal_head.')}
-        
-        state_dict = dfine_weights
-        print(f"   Extracted {len(state_dict)} DFINE weights")
+    print(f"   Checkpoint type: seg_head={has_seg_head}, dfine_prefix={has_dfine_prefix}, amodal={has_amodal}")
     
-    # Load config
+    # If this is a DFineWithSegmentation checkpoint, we need to recreate the architecture
+    if has_seg_head or has_dfine_prefix:
+        print("   Detected segmentation model - recreating architecture...")
+        return load_segmentation_model(config_path, state_dict, device)
+    
+    # Otherwise, load as standard DFINE
     try:
         from src.core import YAMLConfig
     except:
@@ -329,7 +397,7 @@ def main():
     parser.add_argument('--config', default='models/dfine_hgnetv2_x_obj2coco.yml',
                         help='DFINE config file')
     parser.add_argument('--baseline-checkpoint', default='models/dfine_0.73.pth',
-                        help='Baseline DFINE checkpoint')
+                        help='Baseline DFINE checkpoint (segmentation model)')
     parser.add_argument('--amodal-checkpoint', default='outputs/amodal_humans/best_model.pth',
                         help='Amodal-trained checkpoint')
     parser.add_argument('--conf-threshold', type=float, default=0.3,
@@ -370,7 +438,7 @@ def main():
                 output_path = os.path.join(args.output_dir, 'baseline_dfine_result.png')
                 success = test_model(
                     model, args.image, args.conf_threshold, device,
-                    output_path, 'Baseline DFINE (models/dfine_0.73.pth)'
+                    output_path, 'Baseline DFINE Segmentation (dfine_0.73.pth)'
                 )
                 results.append(('Baseline', success))
                 del model

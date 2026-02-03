@@ -2,6 +2,7 @@
 """
 Train Amodal Detection Head for Occluded Humans
 Uses frozen DFINE backbone + trainable amodal head
+FIXED: Properly loads DFINE segmentation model architecture
 """
 
 import os
@@ -16,40 +17,108 @@ from pathlib import Path
 # Add paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / 'amodal_detection_head'))
+sys.path.insert(0, str(PROJECT_ROOT / 'glass_wall_detection' / 'src'))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from cocoa_dataset import COCOAAmodalDataset, collate_fn
 from amodal_head import AmodalOffsetHead, AmodalLoss, extract_roi_features
 
 
-def load_dfine_model(config_path, checkpoint_path, device):
-    """Load pretrained DFINE model"""
+def load_dfine_segmentation_model(config_path, checkpoint_path, device):
+    """Load DFINE segmentation model with proper architecture
+    
+    This handles the DFineWithSegmentation architecture from glass_wall training
+    """
+    print(f"\n📦 Loading DFINE segmentation model...")
+    print(f"   Config: {config_path}")
+    print(f"   Checkpoint: {checkpoint_path}")
+    
+    # Import architecture
+    from model_architecture import SegmentationHead, DFineWithSegmentation
+    
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    
+    # Extract state dict
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+        print("   Using model_state_dict")
+    elif 'ema' in checkpoint and 'module' in checkpoint['ema']:
+        state_dict = checkpoint['ema']['module']
+        print("   Using EMA weights")
+    elif 'model' in checkpoint:
+        state_dict = checkpoint['model']
+        print("   Using model weights")
+    else:
+        state_dict = checkpoint
+        print("   Using checkpoint directly")
+    
+    # Check if this has segmentation head
+    has_seg_head = any('seg_head.' in key for key in state_dict.keys())
+    
+    if not has_seg_head:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} doesn't contain a segmentation head!\n"
+            "Please use your trained segmentation model (e.g., dfine_0.73.pth)"
+        )
+    
+    print("   ✅ Segmentation checkpoint detected")
+    
+    # Load base DFINE config
     try:
-        # Try loading from segmentation_sivert
-        sys.path.insert(0, str(PROJECT_ROOT / 'segmentation_sivert'))
-        from core.models import load_pretrained_dfine
-        model = load_pretrained_dfine(config_path, checkpoint_path)
+        from src.core import YAMLConfig
     except:
-        # Fallback to manual loading
-        try:
-            from src.core import YAMLConfig
-        except:
-            from core import YAMLConfig
-        
-        cfg = YAMLConfig(str(config_path))
-        model = cfg.model
-        
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-        
-        # Handle different checkpoint formats
-        if 'ema' in checkpoint and 'module' in checkpoint['ema']:
-            state_dict = checkpoint['ema']['module']
-        elif 'model' in checkpoint:
-            state_dict = checkpoint['model']
-        else:
-            state_dict = checkpoint
-        
-        model.load_state_dict(state_dict, strict=False)
+        from core import YAMLConfig
+    
+    cfg = YAMLConfig(str(config_path))
+    base_model = cfg.model
+    
+    # Get backbone channels
+    print("   Analyzing backbone architecture...")
+    base_model.eval()
+    with torch.no_grad():
+        dummy_input = torch.randn(1, 3, 640, 640)
+        backbone_features = base_model.backbone(dummy_input)
+        backbone_channels = [feat.shape[1] for feat in backbone_features]
+    
+    print(f"   Backbone channels: {backbone_channels}")
+    
+    # Infer hyperparameters from checkpoint
+    feature_dim = 256
+    for key in state_dict.keys():
+        if 'seg_head.fpn.lateral_convs.0.weight' in key:
+            feature_dim = state_dict[key].shape[0]
+            break
+        elif 'seg_head.decoder.0.weight' in key:
+            feature_dim = state_dict[key].shape[1]
+            break
+    
+    print(f"   Feature dim: {feature_dim}")
+    
+    # Create segmentation head
+    seg_head = SegmentationHead(
+        in_channels_list=backbone_channels,
+        num_classes=7,  # Pascal Person Parts
+        feature_dim=feature_dim,
+        dropout_rate=0.1
+    )
+    
+    # Create combined model
+    model = DFineWithSegmentation(
+        dfine_model=base_model,
+        seg_head=seg_head,
+        freeze_detection=False
+    )
+    
+    # Load weights
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    
+    if missing:
+        print(f"   ⚠️  Missing keys: {len(missing)}")
+    if unexpected:
+        print(f"   ⚠️  Unexpected keys: {len(unexpected)}")
+    
+    print("   ✅ Segmentation model loaded successfully")
     
     return model.to(device)
 
@@ -59,7 +128,12 @@ def get_backbone_channels(model, device):
     model.eval()
     with torch.no_grad():
         dummy = torch.randn(1, 3, 640, 640, device=device)
-        features = model.backbone(dummy)
+        # If this is DFineWithSegmentation, use dfine_model.backbone
+        if hasattr(model, 'dfine_model'):
+            features = model.dfine_model.backbone(dummy)
+        else:
+            features = model.backbone(dummy)
+        
         if isinstance(features, (list, tuple)):
             channels = [f.shape[1] for f in features]
         else:
@@ -79,7 +153,7 @@ def parse_args():
                         help='COCOA training annotations')
     parser.add_argument('--val-ann', default='coco/COCO_amodal_val2014.json',
                         help='COCOA validation annotations')
-    parser.add_argument('--min-occlusion', type=float, default=0.00,
+    parser.add_argument('--min-occlusion', type=float, default=0.1,
                         help='Minimum occlusion rate (0.05=slightly occluded)')
     parser.add_argument('--min-area', type=int, default=400,
                         help='Minimum box area in pixels')
@@ -88,7 +162,7 @@ def parse_args():
     parser.add_argument('--dfine-config', default='models/dfine_hgnetv2_x_obj2coco.yml',
                         help='DFINE config file')
     parser.add_argument('--dfine-checkpoint', default='models/dfine_0.73.pth',
-                        help='DFINE checkpoint (your segmentation model)')
+                        help='DFINE segmentation checkpoint (e.g., dfine_0.73.pth)')
     parser.add_argument('--hidden-dim', type=int, default=512,
                         help='Hidden dimension for amodal head')
     parser.add_argument('--roi-size', type=int, default=7,
@@ -101,7 +175,7 @@ def parse_args():
                         help='Number of epochs')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='Learning rate')
-    parser.add_argument('--weight-decay', type=float, default=1e-4,
+    parser.add_argument('--weight-decay', type=float, default=1e-5,
                         help='Weight decay')
     parser.add_argument('--num-workers', type=int, default=4,
                         help='Dataloader workers')
@@ -111,10 +185,10 @@ def parse_args():
     return parser.parse_args()
 
 
-def train_epoch(amodal_head, backbone, train_loader, criterion, optimizer, device, epoch, roi_size):
+def train_epoch(amodal_head, dfine_model, train_loader, criterion, optimizer, device, epoch, roi_size):
     """Train one epoch"""
     amodal_head.train()
-    backbone.eval()
+    dfine_model.eval()  # Keep DFINE frozen
     
     total_loss = 0
     metrics = {'offset': 0, 'giou': 0, 'occlusion': 0, 'mean_giou': 0, 'mean_iou': 0}
@@ -133,7 +207,12 @@ def train_epoch(amodal_head, backbone, train_loader, criterion, optimizer, devic
         
         # Extract backbone features (frozen)
         with torch.no_grad():
-            features = backbone(images)
+            # Handle both DFineWithSegmentation and plain DFINE
+            if hasattr(dfine_model, 'dfine_model'):
+                features = dfine_model.dfine_model.backbone(images)
+            else:
+                features = dfine_model.backbone(images)
+            
             if isinstance(features, (list, tuple)):
                 feature_map = features[-1]  # Use last layer
             else:
@@ -203,10 +282,10 @@ def train_epoch(amodal_head, backbone, train_loader, criterion, optimizer, devic
     return total_loss / num_batches, {k: v / num_batches for k, v in metrics.items()}
 
 
-def validate(amodal_head, backbone, val_loader, criterion, device, roi_size):
+def validate(amodal_head, dfine_model, val_loader, criterion, device, roi_size):
     """Validate"""
     amodal_head.eval()
-    backbone.eval()
+    dfine_model.eval()
     
     total_loss = 0
     metrics = {'offset': 0, 'giou': 0, 'occlusion': 0, 'mean_giou': 0, 'mean_iou': 0}
@@ -221,7 +300,11 @@ def validate(amodal_head, backbone, val_loader, criterion, device, roi_size):
             valid_mask = batch['valid_mask'].to(device)
             
             # Extract features
-            features = backbone(images)
+            if hasattr(dfine_model, 'dfine_model'):
+                features = dfine_model.dfine_model.backbone(images)
+            else:
+                features = dfine_model.backbone(images)
+            
             if isinstance(features, (list, tuple)):
                 feature_map = features[-1]
             else:
@@ -279,7 +362,7 @@ def main():
     print("\n" + "="*80)
     print("🎯 TRAINING AMODAL DETECTION HEAD - OCCLUDED HUMANS")
     print("="*80)
-    print(f"Strategy: Freeze DFINE backbone + train amodal offset head")
+    print(f"Strategy: Freeze DFINE segmentation model + train amodal offset head")
     print(f"Dataset: COCOA (humans only, occlusion >= {args.min_occlusion:.2f})")
     print(f"Output: {args.output_dir}")
     print("="*80 + "\n")
@@ -289,18 +372,21 @@ def main():
     
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load DFINE model
-    print("📦 Loading DFINE model...")
-    dfine_model = load_dfine_model(args.dfine_config, args.dfine_checkpoint, device)
+    # Load DFINE segmentation model with proper architecture
+    print("📦 Loading DFINE segmentation model...")
+    dfine_model = load_dfine_segmentation_model(
+        args.dfine_config,
+        args.dfine_checkpoint,
+        device
+    )
     
-    # Freeze DFINE (backbone + segmentation head)
-    print("❄️  Freezing DFINE backbone and segmentation head...")
+    # Freeze entire DFINE model (including segmentation head)
+    print("\n❄️  Freezing DFINE segmentation model...")
     for param in dfine_model.parameters():
         param.requires_grad = False
     dfine_model.eval()
     
-    # Get backbone
-    backbone = dfine_model.backbone
+    # Get backbone channels
     backbone_channels = get_backbone_channels(dfine_model, device)
     print(f"   Backbone channels: {backbone_channels}")
     print(f"   Using layer: {backbone_channels[-1]} channels\n")
@@ -388,11 +474,11 @@ def main():
         print(f"{'='*80}")
         
         train_loss, train_metrics = train_epoch(
-            amodal_head, backbone, train_loader, criterion, optimizer, device, epoch, args.roi_size
+            amodal_head, dfine_model, train_loader, criterion, optimizer, device, epoch, args.roi_size
         )
         
         val_loss, val_metrics = validate(
-            amodal_head, backbone, val_loader, criterion, device, args.roi_size
+            amodal_head, dfine_model, val_loader, criterion, device, args.roi_size
         )
         
         scheduler.step()
@@ -401,16 +487,16 @@ def main():
         print(f"   Train: loss={train_loss:.4f}, GIoU={train_metrics['mean_giou']:.3f}, IoU={train_metrics['mean_iou']:.3f}")
         print(f"   Val:   loss={val_loss:.4f}, GIoU={val_metrics['mean_giou']:.3f}, IoU={val_metrics['mean_iou']:.3f}")
         
-        # Save best model - FIXED: Save both DFINE and amodal head
+        # Save best model
         if val_metrics['mean_giou'] > best_giou:
             best_giou = val_metrics['mean_giou']
             best_iou = val_metrics['mean_iou']
             
-            # ✅ FIXED: Save both models
+            # Save complete checkpoint with DFINE + amodal head
             torch.save({
                 'epoch': epoch,
-                'dfine_model': dfine_model.state_dict(),  # ✅ Save full DFINE
-                'amodal_head': amodal_head.state_dict(),  # ✅ Save amodal head
+                'dfine_model': dfine_model.state_dict(),  # Full DFINE segmentation model
+                'amodal_head': amodal_head.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_giou': best_giou,
                 'best_iou': best_iou,
@@ -419,12 +505,12 @@ def main():
             
             print(f"   🏆 New best! GIoU: {best_giou:.3f}, IoU: {best_iou:.3f}")
         
-        # Save checkpoints - FIXED: Save both models
+        # Save checkpoints
         if epoch % 10 == 0:
             torch.save({
                 'epoch': epoch,
-                'dfine_model': dfine_model.state_dict(),  # ✅ Save full DFINE
-                'amodal_head': amodal_head.state_dict(),  # ✅ Save amodal head
+                'dfine_model': dfine_model.state_dict(),
+                'amodal_head': amodal_head.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_giou': best_giou,
                 'args': vars(args)
