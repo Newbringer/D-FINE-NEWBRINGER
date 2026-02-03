@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """
-Train Amodal Offset Prediction - Uses DFINE detections as input
-MUCH SIMPLER AND BETTER than training from scratch!
-
-This approach:
-1. Uses DFINE's person detections (already good!)
-2. Only learns to predict amodal extension
-3. Much simpler problem = better results
+Train Amodal Offset Head for HUMANS ONLY
+Simple, clean, focused on amodal detection
 """
 
 import os
@@ -28,30 +23,67 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from cocoa_dataset import COCOAAmodalDataset, collate_fn
 from amodal_head import AmodalOffsetHead, AmodalOffsetLoss, extract_roi_features
-from segmentation_sivert.core.models import load_pretrained_dfine, get_actual_backbone_channels
+
+try:
+    from segmentation_sivert.core.models import load_pretrained_dfine
+except ImportError:
+    # Fallback if path is different
+    try:
+        from src.core import YAMLConfig
+    except ImportError:
+        from core import YAMLConfig
+    
+    def load_pretrained_dfine(config_path, checkpoint_path):
+        cfg = YAMLConfig(str(config_path))
+        model = cfg.model
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        if 'ema' in checkpoint and 'module' in checkpoint['ema']:
+            state_dict = checkpoint['ema']['module']
+        elif 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        else:
+            state_dict = checkpoint
+        model.load_state_dict(state_dict, strict=False)
+        return model
+
+
+def get_backbone_channels(model, device='cpu'):
+    """Get actual backbone output channels"""
+    model.eval()
+    with torch.no_grad():
+        dummy = torch.randn(1, 3, 640, 640).to(device)
+        features = model.backbone(dummy)
+        channels = [f.shape[1] for f in features]
+    return channels
 
 
 def parse_args():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='Train Amodal Detection for Humans')
     
-    # Paths
+    # Data
     parser.add_argument('--train-images', default='coco/train2014')
     parser.add_argument('--val-images', default='coco/val2014')
-    parser.add_argument('--train-ann', default='coco/COCO_amodal_train2014.json')
-    parser.add_argument('--val-ann', default='coco/COCO_amodal_val2014.json')
+    parser.add_argument('--train-official', default='coco/COCO_amodal_train2014.json',
+                        help='Official COCOA (has human categories)')
+    parser.add_argument('--train-detectron', default='coco/COCO_amodal_train2014_detectron.json',
+                        help='Detectron COCOA (backup for extra data)')
+    parser.add_argument('--val-official', default='coco/COCO_amodal_val2014.json')
+    parser.add_argument('--val-detectron', default='coco/COCO_amodal_val2014_detectron.json')
+    parser.add_argument('--min-occlusion', type=float, default=0.05,
+                        help='0.0=all, 0.05=slightly occluded, 0.1=clearly occluded (RECOMMENDED)')
+    
+    # Model
     parser.add_argument('--dfine-config', default='models/dfine_hgnetv2_x_obj2coco.yml')
     parser.add_argument('--dfine-checkpoint', default='models/dfine_0.73.pth')
-    parser.add_argument('--output-dir', default='outputs/amodal_offset')
+    parser.add_argument('--hidden-dim', type=int, default=512)
+    parser.add_argument('--roi-size', type=int, default=7)
     
     # Training
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--num-workers', type=int, default=4)
-    
-    # Model
-    parser.add_argument('--hidden-dim', type=int, default=512)
-    parser.add_argument('--roi-size', type=int, default=7)
+    parser.add_argument('--output-dir', default='outputs/amodal_humans')
     
     return parser.parse_args()
 
@@ -60,23 +92,25 @@ def create_dataloaders(args):
     """Create dataloaders"""
     train_dataset = COCOAAmodalDataset(
         image_dir=args.train_images,
-        annotation_file=args.train_ann,
+        official_ann_file=args.train_official,
+        detectron_ann_file=args.train_detectron,
         split='train',
         image_size=640,
         max_objects=50,
         augment=True,
-        person_only=True,
+        min_occlusion=args.min_occlusion,
         min_area=400
     )
     
     val_dataset = COCOAAmodalDataset(
         image_dir=args.val_images,
-        annotation_file=args.val_ann,
+        official_ann_file=args.val_official,
+        detectron_ann_file=args.val_detectron,
         split='val',
         image_size=640,
         max_objects=50,
         augment=False,
-        person_only=True,
+        min_occlusion=args.min_occlusion,
         min_area=400
     )
     
@@ -102,10 +136,10 @@ def create_dataloaders(args):
     return train_loader, val_loader
 
 
-def train_epoch(model, dfine_backbone, loader, criterion, optimizer, device, epoch):
+def train_epoch(model, dfine_backbone, loader, criterion, optimizer, device, epoch, roi_size=7):
     """Train one epoch"""
     model.train()
-    dfine_backbone.eval()  # DFINE stays frozen
+    dfine_backbone.eval()
     
     total_loss = 0
     metrics = {'offset': 0, 'giou': 0, 'occlusion': 0, 'mean_giou': 0}
@@ -124,15 +158,14 @@ def train_epoch(model, dfine_backbone, loader, criterion, optimizer, device, epo
         # Get DFINE backbone features (frozen)
         with torch.no_grad():
             backbone_features = dfine_backbone(images)
-            feature_map = backbone_features[-1]  # Use richest features
+            feature_map = backbone_features[-1]
         
         batch_loss = 0
         batch_metrics = {'offset': 0, 'giou': 0, 'occlusion': 0, 'mean_giou': 0}
         valid_samples = 0
         
-        # Process each image in batch
+        # Process each image
         for i in range(len(images)):
-            # Get valid boxes for this image
             mask_i = valid_mask[i] > 0
             if mask_i.sum() == 0:
                 continue
@@ -141,12 +174,12 @@ def train_epoch(model, dfine_backbone, loader, criterion, optimizer, device, epo
             amodal_boxes_i = amodal_boxes_gt[i][mask_i]
             occlusion_i = occlusion_scores_gt[i][mask_i]
             
-            # Extract RoI features for these boxes
+            # Extract RoI features
             feature_map_i = feature_map[i:i+1]
             roi_features = extract_roi_features(
-                feature_map_i, 
+                feature_map_i,
                 visible_boxes_i,
-                roi_size=args.roi_size
+                roi_size=roi_size
             )
             
             # Predict amodal offset
@@ -187,7 +220,7 @@ def train_epoch(model, dfine_backbone, loader, criterion, optimizer, device, epo
     return total_loss / num_batches, {k: v / num_batches for k, v in metrics.items()}
 
 
-def validate(model, dfine_backbone, loader, criterion, device):
+def validate(model, dfine_backbone, loader, criterion, device, roi_size=7):
     """Validate"""
     model.eval()
     dfine_backbone.eval()
@@ -221,9 +254,9 @@ def validate(model, dfine_backbone, loader, criterion, device):
                 
                 feature_map_i = feature_map[i:i+1]
                 roi_features = extract_roi_features(
-                    feature_map_i, 
+                    feature_map_i,
                     visible_boxes_i,
-                    roi_size=7
+                    roi_size=roi_size
                 )
                 
                 predictions = model(roi_features, visible_boxes_i)
@@ -257,9 +290,13 @@ def main():
     args = parse_args()
     
     print("\n" + "="*80)
-    print("🎯 TRAINING AMODAL OFFSET PREDICTOR")
+    print("🎯 TRAINING AMODAL DETECTION - HUMANS ONLY")
     print("="*80)
-    print("Smart approach: Uses DFINE's person detections + predicts amodal offset")
+    print("Strategy: Use DFINE's detection + predict amodal offset")
+    print("Dataset: Official COCOA + Detectron backup")
+    print(f"   Prioritizes Official (has human categories)")
+    print(f"   Uses Detectron for images without humans in Official")
+    print(f"Min occlusion: {args.min_occlusion:.2f}")
     print(f"Output: {args.output_dir}")
     print("="*80)
     
@@ -269,18 +306,20 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Load DFINE backbone (frozen)
-    print("📦 Loading DFINE backbone...")
+    print("\n📦 Loading DFINE backbone...")
     dfine_model = load_pretrained_dfine(args.dfine_config, args.dfine_checkpoint)
-    dfine_backbone = dfine_model.backbone.to(device)
+    dfine_model = dfine_model.to(device)  # Move entire model to device first
+    dfine_backbone = dfine_model.backbone
     dfine_backbone.eval()
     for param in dfine_backbone.parameters():
         param.requires_grad = False
     
-    backbone_channels = get_actual_backbone_channels(dfine_model)
+    backbone_channels = get_backbone_channels(dfine_model, device)
     print(f"   Backbone channels: {backbone_channels}")
+    print(f"   Using final layer: {backbone_channels[-1]} channels")
     
     # Create amodal offset head
-    print(f"🏗️  Creating amodal offset head...")
+    print(f"\n🏗️  Creating amodal offset head...")
     model = AmodalOffsetHead(
         roi_size=args.roi_size,
         in_channels=backbone_channels[-1],
@@ -311,11 +350,11 @@ def main():
         print(f"\n📅 Epoch {epoch}/{args.epochs}")
         
         train_loss, train_metrics = train_epoch(
-            model, dfine_backbone, train_loader, criterion, optimizer, device, epoch
+            model, dfine_backbone, train_loader, criterion, optimizer, device, epoch, args.roi_size
         )
         
         val_loss, val_metrics = validate(
-            model, dfine_backbone, val_loader, criterion, device
+            model, dfine_backbone, val_loader, criterion, device, args.roi_size
         )
         
         scheduler.step()
