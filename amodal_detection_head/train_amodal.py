@@ -401,14 +401,16 @@ def main():
         print(f"   Train: loss={train_loss:.4f}, GIoU={train_metrics['mean_giou']:.3f}, IoU={train_metrics['mean_iou']:.3f}")
         print(f"   Val:   loss={val_loss:.4f}, GIoU={val_metrics['mean_giou']:.3f}, IoU={val_metrics['mean_iou']:.3f}")
         
-        # Save best model
+        # Save best model - FIXED: Save both DFINE and amodal head
         if val_metrics['mean_giou'] > best_giou:
             best_giou = val_metrics['mean_giou']
             best_iou = val_metrics['mean_iou']
             
+            # ✅ FIXED: Save both models
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': amodal_head.state_dict(),
+                'dfine_model': dfine_model.state_dict(),  # ✅ Save full DFINE
+                'amodal_head': amodal_head.state_dict(),  # ✅ Save amodal head
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_giou': best_giou,
                 'best_iou': best_iou,
@@ -417,11 +419,12 @@ def main():
             
             print(f"   🏆 New best! GIoU: {best_giou:.3f}, IoU: {best_iou:.3f}")
         
-        # Save checkpoints
+        # Save checkpoints - FIXED: Save both models
         if epoch % 10 == 0:
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': amodal_head.state_dict(),
+                'dfine_model': dfine_model.state_dict(),  # ✅ Save full DFINE
+                'amodal_head': amodal_head.state_dict(),  # ✅ Save amodal head
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_giou': best_giou,
                 'args': vars(args)
