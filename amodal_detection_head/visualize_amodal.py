@@ -326,7 +326,7 @@ def main():
     parser.add_argument('--image', required=True, help='Input image path')
     parser.add_argument('--config', default='models/dfine_hgnetv2_x_obj2coco.yml',
                         help='DFINE config file')
-    parser.add_argument('--checkpoint', default='outputs/amodal_humans/best_model.pth',
+    parser.add_argument('--checkpoint', default='outputs/amodal_synthetic/best_model.pth',
                         help='Amodal checkpoint')
     parser.add_argument('--conf-threshold', type=float, default=0.3,
                         help='Detection confidence threshold')

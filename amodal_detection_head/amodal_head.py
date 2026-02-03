@@ -2,6 +2,7 @@
 """
 Amodal Offset Prediction Head
 Predicts full extent of occluded humans from visible boxes
+UPDATED: Edge-specific loss to fix directional bias
 """
 
 import torch
@@ -57,9 +58,11 @@ class AmodalOffsetHead(nn.Module):
             nn.ReLU(inplace=True)
         )
         
-        # Predict offset [delta_x1, delta_y1, delta_x2, delta_y2]
-        # Negative = expand left/up, positive = expand right/down
-        self.offset_head = nn.Linear(hidden_dim // 2, 4)
+        # Separate heads for each edge (prevents directional bias)
+        self.offset_head_x1 = nn.Linear(hidden_dim // 2, 1)  # Left edge
+        self.offset_head_y1 = nn.Linear(hidden_dim // 2, 1)  # Top edge
+        self.offset_head_x2 = nn.Linear(hidden_dim // 2, 1)  # Right edge
+        self.offset_head_y2 = nn.Linear(hidden_dim // 2, 1)  # Bottom edge
         
         # Predict occlusion score
         self.occlusion_head = nn.Sequential(
@@ -114,10 +117,15 @@ class AmodalOffsetHead(nn.Module):
         combined = torch.cat([roi_feat, box_feat], dim=1)
         features = self.fusion(combined)
         
-        # Predict offset
-        offset = self.offset_head(features)  # [N, 4]
+        # Predict offset for each edge separately
+        offset_x1 = self.offset_head_x1(features)  # [N, 1]
+        offset_y1 = self.offset_head_y1(features)  # [N, 1]
+        offset_x2 = self.offset_head_x2(features)  # [N, 1]
+        offset_y2 = self.offset_head_y2(features)  # [N, 1]
         
-        # Compute amodal boxes (avoid in-place ops for gradient computation)
+        offset = torch.cat([offset_x1, offset_y1, offset_x2, offset_y2], dim=1)  # [N, 4]
+        
+        # Compute amodal boxes
         amodal_boxes = visible_boxes + offset
         
         # Ensure amodal >= visible (can only expand, not shrink)
@@ -145,16 +153,18 @@ class AmodalOffsetHead(nn.Module):
 
 
 class AmodalLoss(nn.Module):
-    """Loss function for amodal prediction"""
+    """Loss function for amodal prediction with strong edge-specific penalties"""
     
     def __init__(self,
-                 weight_offset: float = 10.0,
+                 weight_offset: float = 5.0,
                  weight_giou: float = 5.0,
-                 weight_occlusion: float = 2.0):
+                 weight_occlusion: float = 2.0,
+                 weight_edge: float = 20.0):
         super().__init__()
         self.weight_offset = weight_offset
         self.weight_giou = weight_giou
         self.weight_occlusion = weight_occlusion
+        self.weight_edge = weight_edge
     
     def box_iou(self, boxes1, boxes2):
         """Compute IoU between boxes [x1, y1, x2, y2]"""
@@ -192,11 +202,7 @@ class AmodalLoss(nn.Module):
         return giou
     
     def forward(self, predictions, targets):
-        """
-        Args:
-            predictions: dict with amodal_boxes, offset, occlusion_scores
-            targets: dict with amodal_boxes, occlusion_scores
-        """
+        """Loss with per-edge penalties (no occlusion weighting)"""
         pred_amodal = predictions['amodal_boxes']
         pred_offset = predictions['offset']
         pred_occlusion = predictions['occlusion_scores']
@@ -212,8 +218,16 @@ class AmodalLoss(nn.Module):
         target_offset[:, 2] = target_amodal[:, 2] - visible_boxes[:, 2]  # x2
         target_offset[:, 3] = target_amodal[:, 3] - visible_boxes[:, 3]  # y2
         
-        # Offset L1 loss
+        # Overall offset L1
         loss_offset = F.l1_loss(pred_offset, target_offset, reduction='mean')
+        
+        # Edge-specific L1 (separate per edge)
+        loss_edge_x1 = F.l1_loss(pred_offset[:, 0], target_offset[:, 0], reduction='mean')
+        loss_edge_y1 = F.l1_loss(pred_offset[:, 1], target_offset[:, 1], reduction='mean')
+        loss_edge_x2 = F.l1_loss(pred_offset[:, 2], target_offset[:, 2], reduction='mean')
+        loss_edge_y2 = F.l1_loss(pred_offset[:, 3], target_offset[:, 3], reduction='mean')
+        
+        loss_edge = (loss_edge_x1 + loss_edge_y1 + loss_edge_x2 + loss_edge_y2) / 4.0
         
         # GIoU loss
         giou = self.generalized_box_iou(pred_amodal, target_amodal)
@@ -225,12 +239,18 @@ class AmodalLoss(nn.Module):
         # Total loss
         total_loss = (
             self.weight_offset * loss_offset +
+            self.weight_edge * loss_edge +
             self.weight_giou * loss_giou +
             self.weight_occlusion * loss_occlusion
         )
         
         return total_loss, {
             'loss_offset': loss_offset.item(),
+            'loss_edge': loss_edge.item(),
+            'loss_edge_x1': loss_edge_x1.item(),
+            'loss_edge_y1': loss_edge_y1.item(),
+            'loss_edge_x2': loss_edge_x2.item(),
+            'loss_edge_y2': loss_edge_y2.item(),
             'loss_giou': loss_giou.item(),
             'loss_occlusion': loss_occlusion.item(),
             'total': total_loss.item(),
