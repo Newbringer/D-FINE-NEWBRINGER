@@ -14,3 +14,4 @@ Execute in this order unless a document says its dependency can run in parallel:
 10. [Map the current real-time vision model landscape](20260904-0700-current-model-landscape.md)
 11. [Train an isolated DETRPose-X adapter with teacher distillation](20260904-0701-isolated-pose-adapter-distillation.md)
 12. [Match pose queries before teacher distillation](20260907-0900-matched-pose-distillation.md)
+13. [Reproduce the seven-class segmentation baseline](20260908-1030-reproduce-segmentation-baseline.md)
