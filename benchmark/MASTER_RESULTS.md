@@ -73,3 +73,10 @@ for both. Current weak points are feet (56.06%) and hands (64.18%).
   124–177 ms mean; GPU/TensorRT proof is still required.
 - RF-DETR lowers soldier-domain false positives from 0.41 to 0.17/image and improves matched IoU,
   but recall falls from 86.3% to 84.2%. It is a precision-biased alternative, not a clear winner.
+
+## RTMO deployment update
+
+RTMO-L successfully builds as FP16 TensorRT 10.15.1 and measures 2.224 ms p50 / 2.252 ms p95
+model-only on the RTX 5070 Ti. ONNX/TensorRT keypoint MAE is 0.0869 with 1.24 px maximum absolute
+drift on the parity frame. With 64.75 local OKS AP, it is now a qualified standalone pose candidate.
+No production integration has been performed.

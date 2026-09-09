@@ -16,5 +16,5 @@ Measure RTMO-L on office videos and RF-DETR-Large on soldier-domain validation b
 
 ## Next step
 
-Pursue RTMO GPU/TensorRT export as the only remaining deployment gate. Retain D-FINE detection and
-the existing segmentation head.
+RTMO passed the subsequent TensorRT deployment gate and is the qualified pose candidate. RF-DETR
+remains a precision-biased alternative, not a general detection winner.
