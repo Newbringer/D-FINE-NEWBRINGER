@@ -15,3 +15,4 @@ Execute in this order unless a document says its dependency can run in parallel:
 11. [Train an isolated DETRPose-X adapter with teacher distillation](20260904-0701-isolated-pose-adapter-distillation.md)
 12. [Match pose queries before teacher distillation](20260907-0900-matched-pose-distillation.md)
 13. [Reproduce the seven-class segmentation baseline](20260908-1030-reproduce-segmentation-baseline.md)
+14. [Evaluate RTMO and RF-DETR on product controls](20260909-0900-rtmo-rfdetr-product-controls.md)

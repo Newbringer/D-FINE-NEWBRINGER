@@ -66,3 +66,10 @@ for both. Current weak points are feet (56.06%) and hands (64.18%).
 2. Measure RF-DETR person recall and false positives on the soldier-domain validation set.
 3. Evaluate whether separate RTMO latency is acceptable versus another shared-head training cycle.
 4. Do not replace segmentation; focus any future work specifically on hands and feet.
+
+## Product-control update
+
+- RTMO-L visibly runs on both office videos and retains its quality lead, but CPU ONNX latency is
+  124–177 ms mean; GPU/TensorRT proof is still required.
+- RF-DETR lowers soldier-domain false positives from 0.41 to 0.17/image and improves matched IoU,
+  but recall falls from 86.3% to 84.2%. It is a precision-biased alternative, not a clear winner.
