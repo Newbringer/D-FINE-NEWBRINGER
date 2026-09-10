@@ -374,6 +374,8 @@ def main():
     ap.add_argument("--pose-config", required=True)
     ap.add_argument("--merged-ckpt", required=True)
     ap.add_argument("--pose-adapter", type=Path, default=None)
+    ap.add_argument("--rtmo-onnx", type=Path, default=None,
+                    help="Replace the model pose output with RTMO while retaining D-FINE det/seg and the same tracker.")
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--use-ffmpeg", action="store_true",
@@ -426,6 +428,12 @@ def main():
 
     from pose_estimation_berna.core.postprocess_detrpose import DETRPosePostProcessor
     from pose_estimation_berna.core.tracking import KalmanTracker
+
+    rtmo = None
+    if args.rtmo_onnx is not None:
+        from rtmlib import RTMO
+        rtmo = RTMO(str(args.rtmo_onnx), model_input_size=(640, 640), score_thr=0.01,
+                    nms_thr=0.65, device="cpu")
 
     model, det_cfg = build_model_from_merged(
         det_config=args.det_config,
@@ -654,6 +662,17 @@ def main():
                     pose_scores_f = pose_scores_hw_f
                     pose_kpts_f = pose_kpts_hw_f
                     pose_order_used = "hw"
+
+        if rtmo is not None:
+            rtmo_xy, rtmo_joint_scores = rtmo(frame, score_thr=0.01)
+            if len(rtmo_xy):
+                pose_kpts_f = np.concatenate(
+                    [rtmo_xy.astype(np.float32), rtmo_joint_scores[..., None].astype(np.float32)], axis=-1)
+                pose_scores_f = rtmo_joint_scores.mean(axis=1).astype(np.float32)
+            else:
+                pose_kpts_f = np.zeros((0, 17, 3), dtype=np.float32)
+                pose_scores_f = np.zeros((0,), dtype=np.float32)
+            pose_order_used = "rtmo"
 
         if args.debug_first_frame and frame_idx == 0:
             print(f"[DEBUG] orig_size_wh: {orig_size_wh.detach().cpu().tolist()}")

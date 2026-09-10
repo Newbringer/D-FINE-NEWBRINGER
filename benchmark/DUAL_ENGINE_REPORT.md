@@ -32,6 +32,20 @@ entities while D-FINE retains general-object detection and the seven-class dense
 existing office comparison videos validate both paths on identical frames; production message
 composition remains out of scope.
 
+The combined D-FINE detection/segmentation + RTMO pose path was also rendered through the same
+Kalman tracker and smoothing code as the baseline:
+
+| Video | Frames | Mean det-to-pose match rate |
+|---|---:|---:|
+| David | 563 | 0.87 |
+| SogO | 706 | 0.98 |
+
+David's rate falls during the final heavy chair occlusion; this is the primary remaining visual
+integration weakness. Hit counts remain driven by the unchanged segmentation mask.
+
+Video SHA-256: David `e07f78931e984555711ab83fc30218c01fc03b78c670d955cff3de906bcb2453`,
+SogO `d2b6c2b79bb5c1173b8609c8c4cf786079037666290e734edbae91c7b2d2c911`.
+
 ## Decision
 
 The dual-engine design is technically viable and is the recommended next architecture candidate:
