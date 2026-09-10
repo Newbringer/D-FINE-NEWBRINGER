@@ -5,6 +5,7 @@ The official Body7 RTMO-L ONNX was converted to FP16 TensorRT 10.15.1 on the RTX
 | Metric | Result |
 |---|---:|
 | Local COCO OKS AP | 64.75 |
+| TensorRT FP16 COCO OKS AP | 64.70 |
 | Current merged pose AP | 48.20 |
 | TensorRT model p50 | 2.224 ms |
 | TensorRT model p95 | 2.252 ms |
@@ -28,3 +29,5 @@ RTMO-L is a **qualified pose candidate**, not yet a replacement for the combined
 a locally measured 16.55-point pose improvement with a viable TensorRT execution time. The next
 architecture decision is whether the extra ~2.2 ms and ~780 MiB are acceptable as a separate pose
 engine, or whether its outputs should supervise a newly designed shared pose head.
+
+Full FP16 evaluation uses the official second-stage NMS and differs from ONNX by only 0.05 AP.

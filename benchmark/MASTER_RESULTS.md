@@ -87,3 +87,9 @@ RTMO-L successfully builds as FP16 TensorRT 10.15.1 and measures 2.224 ms p50 / 
 model-only on the RTX 5070 Ti. ONNX/TensorRT keypoint MAE is 0.0869 with 1.24 px maximum absolute
 drift on the parity frame. With 64.75 local OKS AP, it is now a qualified standalone pose candidate.
 No production integration has been performed.
+
+## Dual-engine verdict
+
+The complete research composition is viable: D-FINE TensorRT p50 13.983 ms plus RTMO FP16 p50
+2.224 ms gives a 16.207 ms sequential model budget. Execution-memory budgets sum to 986.77 MiB.
+RTMO FP16 retains 64.70 pose AP after the official postprocess, so it is the recommended pose path.

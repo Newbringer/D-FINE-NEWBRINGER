@@ -16,3 +16,4 @@ Execute in this order unless a document says its dependency can run in parallel:
 12. [Match pose queries before teacher distillation](20260907-0900-matched-pose-distillation.md)
 13. [Reproduce the seven-class segmentation baseline](20260908-1030-reproduce-segmentation-baseline.md)
 14. [Evaluate RTMO and RF-DETR on product controls](20260909-0900-rtmo-rfdetr-product-controls.md)
+15. [Build the D-FINE plus RTMO dual-engine prototype](20260910-0900-dfine-rtmo-dual-engine.md)
