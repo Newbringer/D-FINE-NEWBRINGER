@@ -60,12 +60,19 @@ for both. Current weak points are feet (56.06%) and hands (64.18%).
 - **Combined model:** no single-pass replacement has won. Keep the current graph while testing RTMO
   as a separate pose path or future teacher.
 
-## Next decisive work
+## Final recommendation
 
-1. Export/benchmark RTMO-L on GPU/TensorRT and render office-video comparisons.
-2. Measure RF-DETR person recall and false positives on the soldier-domain validation set.
-3. Evaluate whether separate RTMO latency is acceptable versus another shared-head training cycle.
-4. Do not replace segmentation; focus any future work specifically on hands and feet.
+1. **Retain the current ModelSurgery model as the combined baseline.** No tested candidate replaces
+   all three tasks in one graph without regression or retraining.
+2. **Use RTMO-L as the recommended pose upgrade candidate.** It improves locally measured pose AP
+   by 16.55 points and its TensorRT engine runs in 2.224 ms p50. Integration should initially be a
+   separate optional pose path because all attempted shared-encoder adapters regressed.
+3. **Retain D-FINE for detection.** RF-DETR is more conservative on domain data but misses more
+   people and remains below stock D-FINE-X on full COCO.
+4. **Retain the in-house segmentation head.** Its 73.61% reproduced mIoU decisively beats SCHP;
+   future work should target hands and feet rather than replace the entire head.
+5. **Do not change production from this research branch.** RTMO integration needs a separate
+   production decision covering total pipeline memory, end-to-end latency, packaging and rollback.
 
 ## Product-control update
 
