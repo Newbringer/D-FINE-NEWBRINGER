@@ -741,6 +741,7 @@ def main():
         denom = max(1, min(det_count, pose_count))
         match_rate = float(len(pairs)) / float(denom)
 
+        match_method = "greedy_iou"
         if det_count > 0 and pose_count > 0 and match_rate < float(args.fallback_min_match_rate):
             fallback_pairs = fallback_assign_by_center(
                 det_boxes_f,
@@ -752,6 +753,7 @@ def main():
             if fallback_rate > match_rate:
                 pairs = fallback_pairs
                 match_rate = fallback_rate
+                match_method = "center_fallback"
 
         match_acc += match_rate
         if args.profile and args.pose_orig_size_order == "auto" and frame_idx % 60 == 0:
@@ -833,6 +835,17 @@ def main():
         verdict = decide_hit(seg_frame, fw, fh,
                              region_size=int(args.crosshair_region))
         verdict["frame_id"] = frame_idx
+        verdict["association"] = {
+            "det_count": det_count,
+            "pose_count": pose_count,
+            "matched": len(pairs),
+            "match_rate": match_rate,
+            "method": match_method,
+            "pairs": [[int(di), int(pi)] for di, pi in pairs],
+            "det_boxes": det_boxes_f.tolist(),
+            "pose_boxes": pose_boxes_f.tolist(),
+            "pose_scores": pose_scores_f.tolist(),
+        }
         hit_log.append(verdict)
         draw_crosshair(vis, verdict)
 
