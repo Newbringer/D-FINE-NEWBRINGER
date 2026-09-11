@@ -132,6 +132,20 @@ def iou_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.where(union > 1e-9, inter / union, 0.0).astype(np.float32)
 
 
+def nms_indices(boxes: np.ndarray, scores: np.ndarray, threshold: float) -> np.ndarray:
+    if boxes.size == 0:
+        return np.zeros((0,), dtype=np.int64)
+    order = np.argsort(scores)[::-1]
+    keep = []
+    while order.size:
+        current = int(order[0]); keep.append(current)
+        if order.size == 1:
+            break
+        overlaps = iou_matrix(boxes[current:current + 1], boxes[order[1:]])[0]
+        order = order[1:][overlaps < float(threshold)]
+    return np.asarray(keep, dtype=np.int64)
+
+
 def pose_boxes_from_keypoints(
     kpts: np.ndarray,
     kpt_thr: float = 0.35,
@@ -419,6 +433,10 @@ def main():
     ap.add_argument("--profile", action="store_true")
     ap.add_argument("--debug-no-tracker", action="store_true")
     ap.add_argument("--track-max-age", type=int, default=30)
+    ap.add_argument("--det-nms-iou", type=float, default=0.60)
+    ap.add_argument("--pose-nms-iou", type=float, default=0.60)
+    ap.add_argument("--track-uncertainty-rel", type=float, default=0.35)
+    ap.add_argument("--track-uncertainty-abs-px", type=float, default=80.0)
     ap.add_argument("--debug-first-frame", action="store_true")
     args = ap.parse_args()
 
@@ -562,8 +580,8 @@ def main():
             p_inflate_per_frame=1.02,
             size_clamp_min_scale=0.7,
             size_clamp_max_scale=1.3,
-            uncertainty_rel=0.35,
-            uncertainty_abs_px=80.0,
+            uncertainty_rel=float(args.track_uncertainty_rel),
+            uncertainty_abs_px=float(args.track_uncertainty_abs_px),
             out_of_frame_max=5,
             new_track_score_thr=float(args.score_thr),
         )
@@ -630,6 +648,9 @@ def main():
 
         det_boxes_f = det_boxes[dkeep] if dkeep.size > 0 else np.zeros((0, 4), dtype=np.float32)
         det_scores_f = det_scores[dkeep] if dkeep.size > 0 else np.zeros((0,), dtype=np.float32)
+        nms_keep = nms_indices(det_boxes_f, det_scores_f, float(args.det_nms_iou))
+        det_boxes_f = det_boxes_f[nms_keep]
+        det_scores_f = det_scores_f[nms_keep]
 
         pose_scores_wh = pose_res_wh["scores"].detach().cpu().numpy()
         pose_kpts_wh = pose_res_wh["keypoints"].detach().cpu().numpy().astype(np.float32)
@@ -733,6 +754,10 @@ def main():
             pose_boxes_f = pose_boxes_f[keep_valid]
             pose_scores_f = pose_scores_f[keep_valid]
             pose_kpts_f = pose_kpts_f[keep_valid]
+            pose_nms_keep = nms_indices(pose_boxes_f, pose_scores_f, float(args.pose_nms_iou))
+            pose_boxes_f = pose_boxes_f[pose_nms_keep]
+            pose_scores_f = pose_scores_f[pose_nms_keep]
+            pose_kpts_f = pose_kpts_f[pose_nms_keep]
 
         pairs = greedy_match(
             det_boxes_f,

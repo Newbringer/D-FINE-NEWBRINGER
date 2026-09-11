@@ -26,3 +26,11 @@ acquisition thresholds, not looser matching that risks cross-person swaps.
 - Every frame records detection count, pose count, pairs, method, boxes, scores and match rate.
 - Existing tracker/smoothing behavior remained unchanged.
 - No production files were modified.
+
+## Follow-up result
+
+Duplicate suppression and a longer, uncertainty-aware latch were implemented as opt-in research
+controls and tested on both office videos. They reduced duplicate tracks slightly but did not bridge
+David's fully hidden interval, while the crosshair hit outputs were byte-for-byte equivalent at the
+decision level. The candidate is therefore retained for reproducible research and rejected as a new
+default until identity-labelled occlusion data exists.

@@ -35,3 +35,26 @@ claiming the 0.87 full-video match rate can be repaired by tuning alone.
 
 A real next-generation fix needs occlusion-latched identity association with explicit duplicate
 suppression and manually annotated track identity—not a looser IoU/center gate.
+
+## Occlusion-latch follow-up
+
+The research harness now exposes duplicate suppression for both D-FINE and RTMO candidates plus
+configurable tracker age and uncertainty. A conservative candidate used NMS IoU 0.60, max age 60,
+relative uncertainty 1.0 and absolute uncertainty 200 pixels.
+
+| Control | Result |
+|---|---|
+| David frames 340–470 | Candidate track IDs fell from six to five; 19 frames still had no track |
+| David full video | Association rose from 0.868 to 0.872; hit output remained exactly unchanged |
+| SogO full video | Two track IDs, no empty-track frames and 1.000 association; hit output unchanged |
+
+The candidate is **not promoted as the default configuration**. It suppresses some duplicates and
+keeps predictions alive longer, but it cannot bridge the David interval where both models return no
+observation. Wider uncertainty also increases identity-swap risk in multi-person scenes. Proving a
+real identity-latch improvement requires manually annotated person IDs through occlusion; the office
+videos currently provide no identity ground truth.
+
+Visual controls:
+
+- `ZKeepResults/research_20260904/david_rtmo_occlusion_latch.mp4`
+- `ZKeepResults/research_20260904/sogo_rtmo_occlusion_latch.mp4`
