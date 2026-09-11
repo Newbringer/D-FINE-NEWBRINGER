@@ -433,8 +433,10 @@ def main():
     ap.add_argument("--profile", action="store_true")
     ap.add_argument("--debug-no-tracker", action="store_true")
     ap.add_argument("--track-max-age", type=int, default=30)
-    ap.add_argument("--det-nms-iou", type=float, default=0.60)
-    ap.add_argument("--pose-nms-iou", type=float, default=0.60)
+    ap.add_argument("--det-nms-iou", type=float, default=1.01,
+                    help="Experimental person-box NMS IoU; values above 1 disable suppression.")
+    ap.add_argument("--pose-nms-iou", type=float, default=1.01,
+                    help="Experimental pose-box NMS IoU; values above 1 disable suppression.")
     ap.add_argument("--track-uncertainty-rel", type=float, default=0.35)
     ap.add_argument("--track-uncertainty-abs-px", type=float, default=80.0)
     ap.add_argument("--debug-first-frame", action="store_true")
