@@ -16,3 +16,22 @@ multi-person swap risk for little possible gain.
 Recommended next research, if required, is an occlusion-specific temporal test: compare existing
 Kalman-predicted tracks with lower-confidence RTMO/D-FINE candidates and measure ID switches against
 manual sequence annotations. This is separate from choosing RTMO as the pose model.
+
+## Temporal threshold experiment
+
+The manually reviewed chair interval is frames 340–470; the same person exists throughout, with
+full occlusion around frames 400–439.
+
+| Configuration | Fully matched | Geometry ambiguous | Mean match rate |
+|---|---:|---:|---:|
+| Current: det .50, pose .35/4 joints | 62 | 3 | 0.485 |
+| Relax pose to .20/3 joints | 56 | 22 | 0.463 |
+| Relax detection to .35 and pose | 63 | 50 | 0.561 |
+
+Lower thresholds add too many ambiguous candidates and are rejected. Increasing tracker max age
+from 30 to 60 frames reduced updated track IDs only from seven to six; it did not remove duplicate
+tracks or the 19 empty-track frames. The safe conclusion is to retain current thresholds and avoid
+claiming the 0.87 full-video match rate can be repaired by tuning alone.
+
+A real next-generation fix needs occlusion-latched identity association with explicit duplicate
+suppression and manually annotated track identity—not a looser IoU/center gate.

@@ -410,12 +410,15 @@ def main():
     ap.add_argument("--seg-dropout", type=float, default=0.1)
     ap.add_argument("--max-persons", type=int, default=8)
     ap.add_argument("--max-frames", type=int, default=None)
+    ap.add_argument("--start-frame", type=int, default=0)
+    ap.add_argument("--end-frame", type=int, default=None)
     ap.add_argument("--live-basic", action="store_true",
                     help="Basic live test mode: draw top pose predictions directly (no tracker, no det-pose matching).")
     ap.add_argument("--live-basic-no-seg", action="store_true",
                     help="When --live-basic is enabled, draw on raw frame (no segmentation overlay).")
     ap.add_argument("--profile", action="store_true")
     ap.add_argument("--debug-no-tracker", action="store_true")
+    ap.add_argument("--track-max-age", type=int, default=30)
     ap.add_argument("--debug-first-frame", action="store_true")
     args = ap.parse_args()
 
@@ -472,6 +475,8 @@ def main():
     cap = cv2.VideoCapture(args.input)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open input: {args.input}")
+    if args.start_frame:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(args.start_frame))
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps is None or fps <= 1e-3:
@@ -539,7 +544,7 @@ def main():
         tracker = KalmanTracker(
             iou_threshold=0.3,
             oks_threshold=1.0,
-            max_age=30,
+            max_age=int(args.track_max_age),
             smooth_alpha=0.8,
             smooth_boxes=True,
             smooth_keypoints=True,
@@ -564,7 +569,8 @@ def main():
         )
 
     hit_log: List[dict] = []
-    frame_idx = 0
+    frame_idx = int(args.start_frame)
+    processed_count = 0
     t_acc = 0.0
     n_acc = 0
     match_acc = 0.0
@@ -674,7 +680,7 @@ def main():
                 pose_scores_f = np.zeros((0,), dtype=np.float32)
             pose_order_used = "rtmo"
 
-        if args.debug_first_frame and frame_idx == 0:
+        if args.debug_first_frame and processed_count == 0:
             print(f"[DEBUG] orig_size_wh: {orig_size_wh.detach().cpu().tolist()}")
             print(f"[DEBUG] orig_size_hw: {orig_size_hw.detach().cpu().tolist()}")
             print(f"[DEBUG] frame shape (h0, w0): ({h0}, {w0})")
@@ -846,6 +852,14 @@ def main():
             "pose_boxes": pose_boxes_f.tolist(),
             "pose_scores": pose_scores_f.tolist(),
         }
+        verdict["tracking"] = [
+            {
+                "track_id": int(t.track_id),
+                "time_since_update": int(getattr(t, "time_since_update", 0)),
+                "score": float(t.score),
+            }
+            for t in (track_out if not args.live_basic else [])
+        ]
         hit_log.append(verdict)
         draw_crosshair(vis, verdict)
 
@@ -876,7 +890,10 @@ def main():
                     )
 
         frame_idx += 1
-        if args.max_frames is not None and frame_idx >= int(args.max_frames):
+        processed_count += 1
+        if args.end_frame is not None and frame_idx > int(args.end_frame):
+            break
+        if args.max_frames is not None and processed_count >= int(args.max_frames):
             break
 
     cap.release()
