@@ -26,3 +26,10 @@ segmentation head. It is therefore still one combined model graph; RTMO is only 
 The approach passes the research gate but is not production-ready. The run is deliberately small;
 the next experiment should use a larger pinned train subset and compare multiple seeds before any
 export or production work.
+
+## Full-scale follow-up
+
+The full-data seed-123 run completed for three epochs (54,876 usable images, 257,911 teacher poses,
+41,157 steps) and scored **51.1 full-validation AP**, improving the current 48.2 baseline by
+**2.9 AP**. Protected module hashes remained unchanged. The improvement is confirmed for one seed;
+multi-seed variance remains the final research gate.

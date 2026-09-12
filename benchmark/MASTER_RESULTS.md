@@ -101,3 +101,7 @@ only pose feature adapters inside the combined graph. Pose improved from 47.1 to
 fixed screen and from 48.2 to 49.2 AP on full COCO validation. Protected backbone, encoder,
 detection and segmentation modules remained hash-identical. This is the first positive single-model
 pose result, but it requires larger multi-seed training before it can be considered a replacement.
+
+The subsequent full-data seed-123 run trained the same isolated adapter for three epochs and scored
+**51.1 AP** on full COCO validation (**+2.9 AP** over the current 48.2 pose head). This confirms the
+single-model approach at full-data scale for one seed; multi-seed validation remains outstanding.
