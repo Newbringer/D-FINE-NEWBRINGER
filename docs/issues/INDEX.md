@@ -18,3 +18,4 @@ Execute in this order unless a document says its dependency can run in parallel:
 14. [Evaluate RTMO and RF-DETR on product controls](20260909-0900-rtmo-rfdetr-product-controls.md)
 15. [Build the D-FINE plus RTMO dual-engine prototype](20260910-0900-dfine-rtmo-dual-engine.md)
 16. [Diagnose RTMO association under heavy occlusion](20260910-1100-rtmo-occlusion-association.md)
+17. [Distill RTMO poses into the combined model](20260912-0900-rtmo-pseudo-distillation.md)

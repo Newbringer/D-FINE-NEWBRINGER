@@ -93,3 +93,11 @@ No production integration has been performed.
 The complete research composition is viable: D-FINE TensorRT p50 13.983 ms plus RTMO FP16 p50
 2.224 ms gives a 16.207 ms sequential model budget. Execution-memory budgets sum to 986.77 MiB.
 RTMO FP16 retains 64.70 pose AP after the official postprocess, so it is the recommended pose path.
+
+## Single-model RTMO teaching update
+
+An isolated 100-step proof of concept used RTMO-L pseudo-labels from 200 COCO train images to train
+only pose feature adapters inside the combined graph. Pose improved from 47.1 to 48.1 AP on the
+fixed screen and from 48.2 to 49.2 AP on full COCO validation. Protected backbone, encoder,
+detection and segmentation modules remained hash-identical. This is the first positive single-model
+pose result, but it requires larger multi-seed training before it can be considered a replacement.
