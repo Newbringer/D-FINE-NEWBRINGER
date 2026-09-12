@@ -132,6 +132,20 @@ def iou_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.where(union > 1e-9, inter / union, 0.0).astype(np.float32)
 
 
+def nms_indices(boxes: np.ndarray, scores: np.ndarray, threshold: float) -> np.ndarray:
+    if boxes.size == 0:
+        return np.zeros((0,), dtype=np.int64)
+    order = np.argsort(scores)[::-1]
+    keep = []
+    while order.size:
+        current = int(order[0]); keep.append(current)
+        if order.size == 1:
+            break
+        overlaps = iou_matrix(boxes[current:current + 1], boxes[order[1:]])[0]
+        order = order[1:][overlaps < float(threshold)]
+    return np.asarray(keep, dtype=np.int64)
+
+
 def pose_boxes_from_keypoints(
     kpts: np.ndarray,
     kpt_thr: float = 0.35,
@@ -374,6 +388,8 @@ def main():
     ap.add_argument("--pose-config", required=True)
     ap.add_argument("--merged-ckpt", required=True)
     ap.add_argument("--pose-adapter", type=Path, default=None)
+    ap.add_argument("--rtmo-onnx", type=Path, default=None,
+                    help="Replace the model pose output with RTMO while retaining D-FINE det/seg and the same tracker.")
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--use-ffmpeg", action="store_true",
@@ -408,12 +424,21 @@ def main():
     ap.add_argument("--seg-dropout", type=float, default=0.1)
     ap.add_argument("--max-persons", type=int, default=8)
     ap.add_argument("--max-frames", type=int, default=None)
+    ap.add_argument("--start-frame", type=int, default=0)
+    ap.add_argument("--end-frame", type=int, default=None)
     ap.add_argument("--live-basic", action="store_true",
                     help="Basic live test mode: draw top pose predictions directly (no tracker, no det-pose matching).")
     ap.add_argument("--live-basic-no-seg", action="store_true",
                     help="When --live-basic is enabled, draw on raw frame (no segmentation overlay).")
     ap.add_argument("--profile", action="store_true")
     ap.add_argument("--debug-no-tracker", action="store_true")
+    ap.add_argument("--track-max-age", type=int, default=30)
+    ap.add_argument("--det-nms-iou", type=float, default=1.01,
+                    help="Experimental person-box NMS IoU; values above 1 disable suppression.")
+    ap.add_argument("--pose-nms-iou", type=float, default=1.01,
+                    help="Experimental pose-box NMS IoU; values above 1 disable suppression.")
+    ap.add_argument("--track-uncertainty-rel", type=float, default=0.35)
+    ap.add_argument("--track-uncertainty-abs-px", type=float, default=80.0)
     ap.add_argument("--debug-first-frame", action="store_true")
     args = ap.parse_args()
 
@@ -426,6 +451,12 @@ def main():
 
     from pose_estimation_berna.core.postprocess_detrpose import DETRPosePostProcessor
     from pose_estimation_berna.core.tracking import KalmanTracker
+
+    rtmo = None
+    if args.rtmo_onnx is not None:
+        from rtmlib import RTMO
+        rtmo = RTMO(str(args.rtmo_onnx), model_input_size=(640, 640), score_thr=0.01,
+                    nms_thr=0.65, device="cpu")
 
     model, det_cfg = build_model_from_merged(
         det_config=args.det_config,
@@ -464,6 +495,8 @@ def main():
     cap = cv2.VideoCapture(args.input)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open input: {args.input}")
+    if args.start_frame:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(args.start_frame))
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps is None or fps <= 1e-3:
@@ -531,7 +564,7 @@ def main():
         tracker = KalmanTracker(
             iou_threshold=0.3,
             oks_threshold=1.0,
-            max_age=30,
+            max_age=int(args.track_max_age),
             smooth_alpha=0.8,
             smooth_boxes=True,
             smooth_keypoints=True,
@@ -549,14 +582,15 @@ def main():
             p_inflate_per_frame=1.02,
             size_clamp_min_scale=0.7,
             size_clamp_max_scale=1.3,
-            uncertainty_rel=0.35,
-            uncertainty_abs_px=80.0,
+            uncertainty_rel=float(args.track_uncertainty_rel),
+            uncertainty_abs_px=float(args.track_uncertainty_abs_px),
             out_of_frame_max=5,
             new_track_score_thr=float(args.score_thr),
         )
 
     hit_log: List[dict] = []
-    frame_idx = 0
+    frame_idx = int(args.start_frame)
+    processed_count = 0
     t_acc = 0.0
     n_acc = 0
     match_acc = 0.0
@@ -616,6 +650,9 @@ def main():
 
         det_boxes_f = det_boxes[dkeep] if dkeep.size > 0 else np.zeros((0, 4), dtype=np.float32)
         det_scores_f = det_scores[dkeep] if dkeep.size > 0 else np.zeros((0,), dtype=np.float32)
+        nms_keep = nms_indices(det_boxes_f, det_scores_f, float(args.det_nms_iou))
+        det_boxes_f = det_boxes_f[nms_keep]
+        det_scores_f = det_scores_f[nms_keep]
 
         pose_scores_wh = pose_res_wh["scores"].detach().cpu().numpy()
         pose_kpts_wh = pose_res_wh["keypoints"].detach().cpu().numpy().astype(np.float32)
@@ -655,7 +692,18 @@ def main():
                     pose_kpts_f = pose_kpts_hw_f
                     pose_order_used = "hw"
 
-        if args.debug_first_frame and frame_idx == 0:
+        if rtmo is not None:
+            rtmo_xy, rtmo_joint_scores = rtmo(frame, score_thr=0.01)
+            if len(rtmo_xy):
+                pose_kpts_f = np.concatenate(
+                    [rtmo_xy.astype(np.float32), rtmo_joint_scores[..., None].astype(np.float32)], axis=-1)
+                pose_scores_f = rtmo_joint_scores.mean(axis=1).astype(np.float32)
+            else:
+                pose_kpts_f = np.zeros((0, 17, 3), dtype=np.float32)
+                pose_scores_f = np.zeros((0,), dtype=np.float32)
+            pose_order_used = "rtmo"
+
+        if args.debug_first_frame and processed_count == 0:
             print(f"[DEBUG] orig_size_wh: {orig_size_wh.detach().cpu().tolist()}")
             print(f"[DEBUG] orig_size_hw: {orig_size_hw.detach().cpu().tolist()}")
             print(f"[DEBUG] frame shape (h0, w0): ({h0}, {w0})")
@@ -708,6 +756,10 @@ def main():
             pose_boxes_f = pose_boxes_f[keep_valid]
             pose_scores_f = pose_scores_f[keep_valid]
             pose_kpts_f = pose_kpts_f[keep_valid]
+            pose_nms_keep = nms_indices(pose_boxes_f, pose_scores_f, float(args.pose_nms_iou))
+            pose_boxes_f = pose_boxes_f[pose_nms_keep]
+            pose_scores_f = pose_scores_f[pose_nms_keep]
+            pose_kpts_f = pose_kpts_f[pose_nms_keep]
 
         pairs = greedy_match(
             det_boxes_f,
@@ -722,6 +774,7 @@ def main():
         denom = max(1, min(det_count, pose_count))
         match_rate = float(len(pairs)) / float(denom)
 
+        match_method = "greedy_iou"
         if det_count > 0 and pose_count > 0 and match_rate < float(args.fallback_min_match_rate):
             fallback_pairs = fallback_assign_by_center(
                 det_boxes_f,
@@ -733,6 +786,7 @@ def main():
             if fallback_rate > match_rate:
                 pairs = fallback_pairs
                 match_rate = fallback_rate
+                match_method = "center_fallback"
 
         match_acc += match_rate
         if args.profile and args.pose_orig_size_order == "auto" and frame_idx % 60 == 0:
@@ -814,6 +868,25 @@ def main():
         verdict = decide_hit(seg_frame, fw, fh,
                              region_size=int(args.crosshair_region))
         verdict["frame_id"] = frame_idx
+        verdict["association"] = {
+            "det_count": det_count,
+            "pose_count": pose_count,
+            "matched": len(pairs),
+            "match_rate": match_rate,
+            "method": match_method,
+            "pairs": [[int(di), int(pi)] for di, pi in pairs],
+            "det_boxes": det_boxes_f.tolist(),
+            "pose_boxes": pose_boxes_f.tolist(),
+            "pose_scores": pose_scores_f.tolist(),
+        }
+        verdict["tracking"] = [
+            {
+                "track_id": int(t.track_id),
+                "time_since_update": int(getattr(t, "time_since_update", 0)),
+                "score": float(t.score),
+            }
+            for t in (track_out if not args.live_basic else [])
+        ]
         hit_log.append(verdict)
         draw_crosshair(vis, verdict)
 
@@ -844,7 +917,10 @@ def main():
                     )
 
         frame_idx += 1
-        if args.max_frames is not None and frame_idx >= int(args.max_frames):
+        processed_count += 1
+        if args.end_frame is not None and frame_idx > int(args.end_frame):
+            break
+        if args.max_frames is not None and processed_count >= int(args.max_frames):
             break
 
     cap.release()
