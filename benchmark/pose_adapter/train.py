@@ -72,7 +72,9 @@ def main() -> int:
     dataset = CocoKeypointsDataset(root_dir=args.coco_root, split="train", image_size=640, flip_prob=0.0)
     if args.rtmo_pseudo:
         pseudo_by_image = {}
-        for prediction in json.loads(args.rtmo_pseudo.read_text()):
+        pseudo_data = json.loads(args.rtmo_pseudo.read_text())
+        predictions = pseudo_data.get("predictions", []) if isinstance(pseudo_data, dict) else pseudo_data
+        for prediction in predictions:
             pseudo_by_image.setdefault(int(prediction["image_id"]), []).append(prediction)
         dataset.ids = [image_id for image_id in dataset.ids if image_id in pseudo_by_image]
         base_dataset = dataset
