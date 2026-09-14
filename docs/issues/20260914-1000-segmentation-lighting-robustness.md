@@ -18,3 +18,9 @@ retained more than 92% mean foreground consistency.
 These are controlled invariance measurements, not ground-truth accuracy. The actionable product
 finding is to prioritize camera exposure and low-noise capture, then validate on real arena footage.
 No checkpoint or production code was changed.
+
+## Three-times-darker follow-up
+
+An exact one-third-brightness condition retained 90.3% foreground consistency (hands 84.6%, feet
+86.8%). Darkness alone is therefore not the main synthetic failure mode; low-light sensor noise
+remains substantially worse.
