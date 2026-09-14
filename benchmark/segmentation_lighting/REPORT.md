@@ -1,0 +1,28 @@
+# ModelSurgery segmentation lighting robustness
+
+The unchanged current ModelSurgery segmentation head was evaluated on 80 office-video frames under
+eight deterministic lighting transformations (640 transformed inputs). Scores are mask consistency
+against the same model on the normal image, not ground-truth accuracy.
+
+| Lighting condition | Foreground consistency IoU | Hands | Feet |
+|---|---:|---:|---:|
+| Strong shadow | 94.3% | 92.6% | 91.5% |
+| LED colour cast | 93.2% | 89.7% | 88.8% |
+| Backlight | 92.2% | 90.0% | 84.1% |
+| Dark | 92.1% | 87.9% | 87.5% |
+| Cold | 90.1% | 84.1% | 87.7% |
+| Warm | 89.4% | 84.6% | 86.5% |
+| Overexposed | 81.1% | 77.2% | 75.1% |
+| Low light + noise | 78.1% | 69.7% | 74.8% |
+
+## Finding
+
+The model is comparatively stable under plain darkness, shadows, backlight and LED colour casts.
+The largest sensitivity is low-light sensor noise, followed by clipping from overexposure. Hands
+are the weakest small-part class under noisy low light (69.7% consistency); feet are weakest under
+overexposure (75.1%). Arena controls should therefore prioritize exposure control and low-noise
+capture before retraining the model.
+
+The local visual controls and detailed CSV files are in
+`ZKeepResults/segmentation_lighting_robustness_v1`. Real arena footage and manually reviewed masks
+are still required to measure actual accuracy.
