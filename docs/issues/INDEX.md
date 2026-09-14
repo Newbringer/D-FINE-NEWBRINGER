@@ -19,3 +19,4 @@ Execute in this order unless a document says its dependency can run in parallel:
 15. [Build the D-FINE plus RTMO dual-engine prototype](20260910-0900-dfine-rtmo-dual-engine.md)
 16. [Diagnose RTMO association under heavy occlusion](20260910-1100-rtmo-occlusion-association.md)
 17. [Distill RTMO poses into the combined model](20260912-0900-rtmo-pseudo-distillation.md)
+18. [Prepare a TagTwo segmentation pilot set](20260914-0900-tagtwo-segmentation-pilot.md)
