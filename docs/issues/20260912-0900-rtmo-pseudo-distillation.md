@@ -33,3 +33,8 @@ The full-data seed-123 run completed for three epochs (54,876 usable images, 257
 41,157 steps) and scored **51.1 full-validation AP**, improving the current 48.2 baseline by
 **2.9 AP**. Protected module hashes remained unchanged. The improvement is confirmed for one seed;
 multi-seed variance remains the final research gate.
+
+Seeds 456 and 789 subsequently scored 51.7 and 51.5 AP. Across seeds 123/456/789 the mean is
+**51.43 AP** (sample standard deviation 0.31), and every run beats the 48.2 baseline. The training
+improvement is therefore reproducible. Export parity, latency and office-video review remain
+separate promotion gates.

@@ -37,3 +37,23 @@ images (257,911 RTMO pseudo poses, batch 4, 41,157 steps). Full COCO validation 
 
 This confirms the improvement for seed 123. Independent seeds are still required to quantify run
 variance before the candidate can be called production-ready.
+
+## Three-seed result
+
+| Seed | Full COCO pose AP | Gain over 48.2 |
+|---:|---:|---:|
+| 123 | 51.1 | +2.9 |
+| 456 | 51.7 | +3.5 |
+| 789 | 51.5 | +3.3 |
+| **Mean** | **51.43** | **+3.23** |
+
+The range is 0.6 AP and the sample standard deviation is 0.31 AP. All three independent runs beat
+the baseline, so the quality improvement is reproducible. Seed 456 is the current best candidate.
+
+- Seed 456 checkpoint: `5bf3c6742877cc80ca57ad9f6de1a426aed3e9977574209b6795a0fe1c4ace68`
+- Seed 456 predictions: `606fa938df6d92f17ff35c28f37f4e7907b18a0c8bda67c2b7615bbb8dc944dc`
+- Seed 789 checkpoint: `892bdd11106257d8d9c97f5dcc309e809ab8f15419270f242fd0473571451365`
+- Seed 789 predictions: `6da78a28e96bc77c3b4caae0c4aebfe552edfe0179b66debded0ba4876895795`
+
+The remaining gates are export/latency parity and office-video inspection. No production files have
+been changed.
