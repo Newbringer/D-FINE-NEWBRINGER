@@ -109,6 +109,7 @@ def main() -> int:
     parser.add_argument("--det-config", required=True)
     parser.add_argument("--pose-config", required=True)
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--seg-head-ckpt", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
 
@@ -117,6 +118,9 @@ def main() -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, _ = build_model_from_merged(args.det_config, args.pose_config, args.checkpoint,
                                        7, 384, 0.1, 640)
+    if args.seg_head_ckpt:
+        checkpoint = torch.load(args.seg_head_ckpt, map_location="cpu", weights_only=False)
+        model.seg_head.load_state_dict(checkpoint["seg_head"], strict=True)
     model = model.to(device).eval()
     transform = T.Compose([T.Resize((640, 640)), T.ToTensor()])
 

@@ -20,6 +20,7 @@ def main() -> int:
     parser.add_argument("--det-config", required=True)
     parser.add_argument("--pose-config", required=True)
     parser.add_argument("--merged-ckpt", required=True)
+    parser.add_argument("--seg-head-ckpt", type=Path)
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -30,6 +31,9 @@ def main() -> int:
     model, _ = build_model_from_merged(det_config=args.det_config, pose_config=args.pose_config,
         merged_ckpt=args.merged_ckpt, seg_num_classes=7, seg_feature_dim=384,
         seg_dropout=0.1, image_size=640)
+    if args.seg_head_ckpt:
+        checkpoint = torch.load(args.seg_head_ckpt, map_location="cpu", weights_only=False)
+        model.seg_head.load_state_dict(checkpoint["seg_head"], strict=True)
     device = torch.device("cuda")
     model = model.to(device).eval()
     dataset = PascalPersonPartsDataset(root_dir=args.dataset, split="val", image_size=640,
