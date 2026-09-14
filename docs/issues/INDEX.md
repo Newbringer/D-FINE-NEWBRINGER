@@ -22,3 +22,4 @@ Execute in this order unless a document says its dependency can run in parallel:
 18. [Prepare a TagTwo segmentation pilot set](20260914-0900-tagtwo-segmentation-pilot.md)
 19. [Test ModelSurgery segmentation under varied lighting](20260914-1000-segmentation-lighting-robustness.md)
 20. [Fine-tune ModelSurgery segmentation for low light](20260914-1100-low-light-segmentation-finetuning.md)
+21. [Evaluate HumanQueryNet as a multitask visual control](20260914-1200-humanquerynet-visual-control.md)
