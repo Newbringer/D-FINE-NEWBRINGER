@@ -24,3 +24,7 @@ No checkpoint or production code was changed.
 An exact one-third-brightness condition retained 90.3% foreground consistency (hands 84.6%, feet
 86.8%). Darkness alone is therefore not the main synthetic failure mode; low-light sensor noise
 remains substantially worse.
+
+At exactly one tenth brightness, foreground consistency falls to 75.2% (hands 69.0%, feet 72.5%,
+torso 70.9%). This is the first pure-darkness condition to underperform the earlier noisy-low-light
+control and establishes a clear robustness limit.

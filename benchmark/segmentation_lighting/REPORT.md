@@ -13,6 +13,7 @@ against the same model on the normal image, not ground-truth accuracy.
 | Cold | 90.1% | 84.1% | 87.7% |
 | Warm | 89.4% | 84.6% | 86.5% |
 | Three times darker | 90.3% | 84.6% | 86.8% |
+| Ten times darker | 75.2% | 69.0% | 72.5% |
 | Overexposed | 81.1% | 77.2% | 75.1% |
 | Low light + noise | 78.1% | 69.7% | 74.8% |
 
@@ -24,6 +25,10 @@ are the weakest small-part class under noisy low light (69.7% consistency); feet
 overexposure (75.1%). At exactly one third of normal brightness the model retains 90.3% foreground
 consistency, showing that sensor noise is more damaging than brightness reduction alone. Arena
 controls should therefore prioritize exposure control and low-noise capture before retraining.
+
+At one tenth of normal brightness, consistency falls sharply to 75.2% overall. Hands drop to 69.0%,
+feet to 72.5%, and torso to 70.9%. This establishes a clear synthetic low-light failure region even
+without adding sensor noise.
 
 The local visual controls and detailed CSV files are in
 `ZKeepResults/segmentation_lighting_robustness_v1`. Real arena footage and manually reviewed masks

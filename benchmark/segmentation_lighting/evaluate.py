@@ -41,6 +41,7 @@ def variants(image: np.ndarray, seed: int) -> dict[str, np.ndarray]:
 
     dark = clip(255.0 * np.power(value / 255.0, 1.45) * 0.55)
     dark_3x = clip(value / 3.0)
+    dark_10x = clip(value / 10.0)
     overexposed = clip(value * 1.45 + 42.0)
     warm = clip(value * np.asarray([0.72, 0.96, 1.25], dtype=np.float32))
     cold = clip(value * np.asarray([1.28, 1.02, 0.75], dtype=np.float32))
@@ -65,6 +66,7 @@ def variants(image: np.ndarray, seed: int) -> dict[str, np.ndarray]:
     return {
         "dark": dark,
         "dark_3x": dark_3x,
+        "dark_10x": dark_10x,
         "overexposed": overexposed,
         "warm": warm,
         "cold": cold,
