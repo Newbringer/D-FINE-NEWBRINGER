@@ -33,3 +33,10 @@ PyTorch/ONNX task parity on fixed real frames before building another TensorRT e
 full COCO AP parity before accepting latency.
 
 No TagTwo or production files were modified.
+
+## Resolution
+
+This initial failure was resolved for ONNX by making DETRPose eval TopK deterministic across
+runtimes. The corrected ONNX scores 51.83 AP versus 51.70 PyTorch on full COCO and is documented in
+`ONNX_DEPLOYMENT.md`. TensorRT remains rejected because its recursive decoder numerics still fail;
+ONNX Runtime CUDA is the qualified research path.

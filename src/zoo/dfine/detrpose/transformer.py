@@ -482,7 +482,18 @@ class DETRPoseTransformer(nn.Module):
         output_memory = self.enc_output_norm(self.enc_output(output_memory))
         topk = self.num_queries
         enc_outputs_class_unselected = self.enc_out_class_embed(output_memory)
-        topk_idx = torch.topk(enc_outputs_class_unselected.max(-1)[0], topk, dim=1)[1]
+        selection_scores = enc_outputs_class_unselected.max(-1)[0]
+        if self.training:
+            topk_idx = torch.topk(selection_scores, topk, dim=1)[1]
+        else:
+            # TopK does not define tie ordering consistently across PyTorch, ONNX and TensorRT.
+            # Quantize only the non-differentiable eval selection and add an integer index key so
+            # numerically equivalent runtimes choose the same query anchors.
+            positions = selection_scores.shape[1]
+            quantized = torch.round(selection_scores * 1000.0).to(torch.int64)
+            index_key = torch.arange(positions, device=selection_scores.device, dtype=torch.int64)
+            stable_scores = quantized * (positions + 1) - index_key.unsqueeze(0)
+            topk_idx = torch.topk(stable_scores, topk, dim=1)[1]
 
         topk_memory = output_memory.gather(dim=1, index=topk_idx.unsqueeze(-1).repeat(1, 1, output_memory.shape[-1]))
         topk_anchors = output_proposals.gather(dim=1, index=topk_idx.unsqueeze(-1).repeat(1, 1, 2))
