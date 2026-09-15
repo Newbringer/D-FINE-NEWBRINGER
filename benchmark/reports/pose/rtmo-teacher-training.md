@@ -5,7 +5,7 @@ RTMO-L was used only during offline training. Inference remains the existing com
 
 ## Reproducible run
 
-- Teacher: pinned RTMO-L Body7 ONNX already qualified in `RTMO_DEPLOYMENT.md`
+- Teacher: pinned RTMO-L Body7 ONNX already qualified in [`rtmo-deployment.md`](rtmo-deployment.md)
 - Training data: first 200 person-containing COCO train2017 images, 686 accepted poses
 - Training: 100 steps, batch 2, seed 123, learning rate 1e-5, adapter only
 - Validation: separate COCO val2017 split

@@ -157,7 +157,7 @@
   },
   "metrics": {
     "detection_coco_ap": {"value": 0.436, "evidence": "measured", "report": "runs/coco_det_val2017.json"},
-    "detection_person_ap": {"value": 0.611, "evidence": "measured", "report": "benchmark/MODEL_BASELINE.md"},
+    "detection_person_ap": {"value": 0.611, "evidence": "measured", "report": "benchmark/reports/overview/model-baseline.md"},
     "pose_coco_oks_ap": {"value": 0.482, "evidence": "measured", "report": "runs/coco_pose_val2017.json"},
     "segmentation_validation_miou": {
       "value": 0.7364,

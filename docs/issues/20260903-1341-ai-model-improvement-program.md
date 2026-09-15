@@ -53,5 +53,6 @@ hit pipeline, and promote only a locally measured winner.
 
 ## Next step
 
-Program complete with a supported no-change conclusion. No candidate passed all-task promotion
-gates; production and game-server validation were therefore not started.
+Program complete with one research-qualified ONNX candidate: the RTMO-taught pose adapter improves
+pose while preserving the single combined graph. Its visual product gain is modest, so production
+and game-server promotion remain intentionally deferred.

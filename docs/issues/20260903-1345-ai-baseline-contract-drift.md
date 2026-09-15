@@ -48,7 +48,7 @@ Measured findings:
   are not; exact graph lineage is missing, so full numerical parity is not proven.
 - Typed metric provenance is frozen in `benchmark/baseline/production_manifest.json`; production
   still interprets the ambiguous `miou48` filename token.
-- Full evidence and raw-output hashes are in `benchmark/CONTRACT_DRIFT.md`.
+- Full evidence and raw-output hashes are in `benchmark/reports/overview/contract-drift.md`.
 
 Deferred outside this issue:
 

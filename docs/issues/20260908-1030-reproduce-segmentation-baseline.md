@@ -25,6 +25,6 @@ Test SCHP Pascal-7 as the closest public semantic segmentation control. Current 
 ## Completion evidence
 
 - `benchmark/harness/eval_pascal_seg.py`
-- `benchmark/segmentation/BASELINE_REPORT.md`
+- `benchmark/reports/segmentation/baseline.md`
 - Full 1,829-image result: 73.6079% mIoU and 95.4991% pixel accuracy.
 - Historical difference: only -0.0321 percentage points, while preserving the reconstruction caveat.

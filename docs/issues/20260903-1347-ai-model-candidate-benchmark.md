@@ -39,7 +39,7 @@ repaired ModelSurgery baselines.
 Completed evidence:
 
 - `benchmark/candidates/registry.json` pins seven candidate paths and official revisions.
-- `benchmark/candidates/REPORT.md` records the gates and final disposition for every candidate.
+- `benchmark/reports/candidates/candidate-results.md` records the gates and final disposition for every candidate.
 - Official DETRPose-X reproduced 74.41 OKS AP locally, but a direct shared-encoder transplant
   collapsed to 0.51 AP and is rejected without retraining/isolation.
 - Sapiens was locally compared as a semantic parsing teacher, not treated as ground truth.
