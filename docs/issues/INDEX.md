@@ -24,3 +24,4 @@ Execute in this order unless a document says its dependency can run in parallel:
 20. [Fine-tune ModelSurgery segmentation for low light](20260914-1100-low-light-segmentation-finetuning.md)
 21. [Evaluate HumanQueryNet as a multitask visual control](20260914-1200-humanquerynet-visual-control.md)
 22. [Export and qualify the RTMO-taught pose adapter](20260915-1000-pose-adapter-export-gate.md)
+23. [Assess ModelSurgery paper potential](20260915-1300-modelsurgery-paper-potential.md)
