@@ -38,6 +38,8 @@ def parse_args():
     ap.add_argument("--det-config", required=True, help="Det/seg YAML config")
     ap.add_argument("--pose-config", required=True, help="Pose YAML config")
     ap.add_argument("--merged-ckpt", required=True, help="Merged checkpoint (.pth)")
+    ap.add_argument("--pose-adapter", type=Path,
+                    help="Optional isolated pose-adapter checkpoint; keeps one exported graph.")
     ap.add_argument("--out", required=True, help="Output ONNX path")
     ap.add_argument("--image-size", type=int, default=640, help="Export input size (must match deployment shape)")
     ap.add_argument("--seg-num-classes", type=int, default=7)
@@ -124,6 +126,15 @@ def main():
     os.chdir(REPO)
 
     model = build_model_from_merged_ckpt(args)
+    if args.pose_adapter is not None:
+        from benchmark.pose_adapter.model import PoseAdapterModel
+
+        adapted = PoseAdapterModel(model, [384, 384, 384])
+        checkpoint = torch.load(args.pose_adapter, map_location="cpu", weights_only=False)
+        adapted.pose_adapters.load_state_dict(checkpoint["pose_adapters"], strict=True)
+        adapted.pose_decoder.load_state_dict(checkpoint["pose_decoder"], strict=True)
+        model = adapted.eval()
+        print(f"[pose-adapter] loaded {args.pose_adapter}")
     wrapper = ExportWrapper(model).eval()
 
     dummy = torch.randn(1, 3, int(args.image_size), int(args.image_size))

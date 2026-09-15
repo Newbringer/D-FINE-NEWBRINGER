@@ -39,7 +39,7 @@ Improve pose without degrading detection, segmentation, hit quality, or deployme
 Completed evidence:
 
 - `benchmark/encoder_repair/build_candidates.py`
-- `benchmark/encoder_repair/REPORT.md`
+- `benchmark/reports/pose/experiments/encoder-repair.md`
 - Phase 1 reconstructed with 100% source checkpoint key coverage and hash-pinned separately.
 - Phase 2 changed 546/546 encoder tensors, 234/261 pose tensors, and zero backbone, detection, or
   segmentation tensors.

@@ -27,7 +27,7 @@ Evaluate models repeatably across individual heads, product hit quality, and run
 ## Evidence and key files
 
 - `benchmark/harness/`
-- `benchmark/MODEL_BASELINE.md`
+- `benchmark/reports/overview/model-baseline.md`
 - `/home/berna/tagtwo-monorepo/src/server/ai-engine/utils/hit_detector.py`
 
 ## Validation

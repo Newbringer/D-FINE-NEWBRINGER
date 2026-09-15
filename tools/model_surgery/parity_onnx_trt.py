@@ -196,7 +196,8 @@ def main():
     sess = ort.InferenceSession(
         args.onnx, providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
     )
-    onnx_out = sess.run(None, {"images": x_np})
+    onnx_input_name = sess.get_inputs()[0].name
+    onnx_out = sess.run(None, {onnx_input_name: x_np})
     onnx_names = [o.name for o in sess.get_outputs()]
     onnx_map = {k: v for k, v in zip(onnx_names, onnx_out)}
 

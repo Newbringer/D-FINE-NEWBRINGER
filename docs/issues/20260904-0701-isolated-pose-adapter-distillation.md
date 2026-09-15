@@ -45,7 +45,7 @@ detection-compatible shared encoder or degrading detection and segmentation.
 ## Outputs
 
 - `benchmark/pose_adapter/` training and evaluation code
-- `benchmark/pose_adapter/REPORT.md`
+- `benchmark/reports/pose/experiments/initial-adapter.md`
 - Checkpoints and raw teacher/candidate outputs under ignored `.cache/`
 
 ## Validation
@@ -65,7 +65,7 @@ distillation or feature-distribution alignment.
   freeze boundary.
 - `benchmark/pose_adapter/train.py`: supervised/distilled training, resume state, source arguments,
   losses, and protected hashes.
-- `benchmark/pose_adapter/REPORT.md`: hashes, screen results, and supported rejection.
+- `benchmark/reports/pose/experiments/initial-adapter.md`: hashes, screen results, and supported rejection.
 - Seven unit tests pass, including exact identity, shape, gradients, class contract and metrics.
 - Real model smoke proved bit-identical output for all five primary tensors before training.
 - Adapter-only distilled run: 43.4 AP versus 47.1 baseline; adapter+decoder: 41.6 AP. Both rejected.

@@ -43,7 +43,7 @@ segmentation, and genuine multitask models exist; how each would fit the current
 ## Outputs
 
 - `benchmark/landscape/registry.json`
-- `benchmark/landscape/REPORT.md`
+- `benchmark/reports/candidates/model-landscape.md`
 - Local raw outputs under ignored `.cache/` or `runs/`
 
 ## Validation
@@ -62,7 +62,7 @@ RTMO-L is the independent pose-family control after the adapter smoke test.
 - `benchmark/landscape/registry.json`: 25 candidates across four categories with primary sources,
   pinned repository revisions where code exists, licenses, separate paper/local evidence, fit, and
   verdict.
-- `benchmark/landscape/REPORT.md`: ranked tests plus explicit explanations of incompatible and
+- `benchmark/reports/candidates/model-landscape.md`: ranked tests plus explicit explanations of incompatible and
   rejected models.
 - `benchmark/landscape/validate_registry.py`: schema, minimum coverage, source, evidence separation,
   uniqueness, and verdict validation.
