@@ -388,6 +388,8 @@ def main():
     ap.add_argument("--pose-config", required=True)
     ap.add_argument("--merged-ckpt", required=True)
     ap.add_argument("--pose-adapter", type=Path, default=None)
+    ap.add_argument("--seg-head-ckpt", type=Path, default=None,
+                    help="Optional isolated segmentation-head training checkpoint.")
     ap.add_argument("--rtmo-onnx", type=Path, default=None,
                     help="Replace the model pose output with RTMO while retaining D-FINE det/seg and the same tracker.")
     ap.add_argument("--input", required=True)
@@ -475,6 +477,10 @@ def main():
         adapted.pose_adapters.load_state_dict(adapter_checkpoint["pose_adapters"], strict=True)
         adapted.pose_decoder.load_state_dict(adapter_checkpoint["pose_decoder"], strict=True)
         model = adapted
+    if args.seg_head_ckpt is not None:
+        segmentation_checkpoint = torch.load(args.seg_head_ckpt, map_location="cpu", weights_only=False)
+        model.seg_head.load_state_dict(segmentation_checkpoint["seg_head"], strict=True)
+        print(f"[seg-head] loaded {args.seg_head_ckpt}")
 
     device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
     model = model.to(device).eval()

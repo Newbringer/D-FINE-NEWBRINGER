@@ -71,3 +71,18 @@ Retain seed 20260916 epoch 6 as the best research candidate. Do not promote it t
 the gain is modest and must be validated on real TagTwo camera frames. Further improvement should
 come from real camera noise/exposure data or higher-resolution small-part features, not additional
 synthetic epochs.
+
+## Video controls
+
+The selected balanced head was rendered against the current head on identical David and SogO
+frames in normal light and at exactly one-tenth brightness. Detection and pose were unchanged.
+
+| Video | Current hits | Candidate hits |
+|---|---:|---:|
+| David, normal | 259 | 276 |
+| David, 10x dark | 244 | 254 |
+| SogO, normal | 315 | 316 |
+| SogO, 10x dark | 305 | 308 |
+
+These counts show changed decisions, not improved accuracy; the office videos have no hit/body-part
+ground truth. Visual files are under `ZKeepResults/segmentation_lowlight_v2/comparisons/`.
