@@ -32,9 +32,35 @@ def clip(image: np.ndarray) -> np.ndarray:
     return np.clip(image, 0, 255).astype(np.uint8)
 
 
-def augment_light(image: np.ndarray, rng: np.random.Generator, phase: str = "balanced") -> tuple[np.ndarray, str]:
+def augment_light(image: np.ndarray, rng: np.random.Generator, phase: str = "balanced",
+                  severity: float = 1.0) -> tuple[np.ndarray, str]:
     value = image.astype(np.float32)
     choice = float(rng.random())
+    if phase == "progressive":
+        severity = float(np.clip(severity, 0.0, 1.0))
+        if choice < 0.50: return image, "normal"
+        if choice < 0.68:
+            low = 0.55 - 0.45 * severity; high = 0.90 - 0.40 * severity
+            return clip(value * rng.uniform(low, high)), "progressive_exposure"
+        if choice < 0.80:
+            gamma = float(rng.uniform(1.05, 1.25 + 1.75 * severity))
+            scale = float(rng.uniform(0.85 - 0.40 * severity, 1.0))
+            return clip(255.0 * np.power(value / 255.0, gamma) * scale), "progressive_gamma"
+        if choice < 0.90:
+            factor = float(rng.uniform(0.65 - 0.52 * severity, 0.90 - 0.45 * severity))
+            sigma = float(rng.uniform(2.0, 3.0 + 15.0 * severity))
+            return clip(value * factor + rng.normal(0.0, sigma, value.shape)), "progressive_noise"
+        if choice < 0.95:
+            spread = 0.10 + 0.30 * severity
+            cast = np.asarray([rng.uniform(1-spread, 1+spread), rng.uniform(0.9, 1.1),
+                               rng.uniform(1-spread, 1+spread)], dtype=np.float32)
+            return clip(value * cast), "progressive_color"
+        if choice < 0.98:
+            return clip(value * rng.uniform(1.05, 1.20 + 0.50 * severity)
+                        + rng.uniform(0, 35 * severity)), "progressive_overexposed"
+        kernel_size = int(rng.choice([3, 5] if severity < 0.6 else [3, 5, 7]))
+        kernel = np.zeros((kernel_size, kernel_size)); kernel[kernel_size // 2] = 1.0 / kernel_size
+        return cv2.filter2D(image, -1, kernel), "progressive_motion"
     if phase == "moderate":
         if choice < 0.55: return image, "normal"
         if choice < 0.75: return clip(value * rng.uniform(0.30, 0.70)), "moderate_dark"
@@ -94,10 +120,11 @@ def augment_light(image: np.ndarray, rng: np.random.Generator, phase: str = "bal
 
 
 class PairedLightingDataset(torch.utils.data.Dataset):
-    def __init__(self, root: str, seed: int, phase: str = "balanced"):
+    def __init__(self, root: str, seed: int, phase: str = "balanced", total_epochs: int = 1):
         self.base = PascalPersonPartsDataset(root_dir=root, split="train", image_size=640,
                                              num_classes=7, tier="standard")
         self.seed = int(seed); self.epoch = 0; self.phase = phase
+        self.total_epochs = max(1, int(total_epochs))
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
@@ -119,7 +146,8 @@ class PairedLightingDataset(torch.utils.data.Dataset):
                 mask = mask[y1:y1 + side, x1:x1 + side]
         if float(rng.random()) < 0.5:
             image, mask = image[:, ::-1].copy(), mask[:, ::-1].copy()
-        clean = image.copy(); augmented, condition = augment_light(image, rng, self.phase)
+        severity = (self.epoch - 1) / max(1, self.total_epochs - 1)
+        clean = image.copy(); augmented, condition = augment_light(image, rng, self.phase, severity)
         return (self.base.preprocess_image(clean), self.base.preprocess_image(augmented),
                 self.base.preprocess_mask(mask), condition)
 
@@ -174,9 +202,10 @@ def main() -> int:
     parser.add_argument("--min-epochs", type=int, default=4); parser.add_argument("--patience", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=4); parser.add_argument("--lr", type=float, default=3e-6)
     parser.add_argument("--seed", type=int, default=20260916); parser.add_argument("--screen-size", type=int, default=384)
-    parser.add_argument("--phase", choices=["balanced", "moderate", "strong"], default="balanced")
+    parser.add_argument("--phase", choices=["balanced", "moderate", "strong", "progressive"], default="balanced")
     parser.add_argument("--initial-seg-ckpt", type=Path,
                         help="Optional prior v2 checkpoint whose seg_head starts this curriculum phase.")
+    parser.add_argument("--save-every-epoch", action="store_true")
     args = parser.parse_args()
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     device = torch.device("cuda")
@@ -191,7 +220,7 @@ def main() -> int:
         model.seg_head.load_state_dict(initial["seg_head"], strict=True)
     model.seg_head.requires_grad_(True); model.to(device); teacher.to(device)
     model.seg_head.eval()
-    train = PairedLightingDataset(args.dataset, args.seed, args.phase)
+    train = PairedLightingDataset(args.dataset, args.seed, args.phase, args.epochs)
     val = PascalPersonPartsDataset(root_dir=args.dataset, split="val", image_size=640,
                                    num_classes=7, tier="standard")
     screen = list(range(min(args.screen_size, len(val)))); full = list(range(len(val)))
@@ -241,6 +270,11 @@ def main() -> int:
         row = {"epoch": epoch, "loss": float(np.mean(losses)), "lr": optimizer.param_groups[0]["lr"],
                "eligible": eligible, "robust_miou": robust, "metrics": metrics, "conditions": counts}
         history.append(row); print(json.dumps(row), flush=True)
+        if args.save_every_epoch:
+            epoch_dir = args.out.parent / f"{args.out.stem}_epochs"; epoch_dir.mkdir(parents=True, exist_ok=True)
+            torch.save({"seg_head": {k: v.detach().cpu() for k, v in model.seg_head.state_dict().items()},
+                        "epoch": epoch, "metrics": row, "args": vars(args)},
+                       epoch_dir / f"epoch_{epoch:02d}.pth")
         if best is None or score > best[0]:
             best = (score, epoch, copy.deepcopy(model.seg_head.state_dict()), row); stale = 0
         else: stale += 1

@@ -28,3 +28,7 @@ realistic augmentation, fixed multi-condition validation and validation-safe Bat
 All seeds improve 10x-dark mIoU from 49.59% to 50.83–50.96% while keeping normal mIoU within the
 0.5-point gate. Additional moderate and strong curriculum phases both select epoch 0 and add no
 gain. Seed 20260916 epoch 6 is the retained research candidate.
+
+A forced 30-epoch progressive control saved and evaluated every epoch. Epoch 29 won on the screen
+but scored 58.25% robust mean on full validation versus 58.30% for the selected balanced model, and
+was worse on 10x darkness and noisy low light. More epochs are therefore not the missing factor.

@@ -40,6 +40,25 @@ Both phases selected **epoch 0**. Every trained curriculum epoch reduced the com
 score relative to its input, so early stopping retained the balanced seed unchanged. More epochs or
 stronger synthetic augmentation do not improve this dataset/model combination.
 
+## Forced 30-epoch control
+
+To test whether early stopping was premature, a separate progressive run completed all 30 epochs
+without stopping and saved every checkpoint. Augmentations were visually audited at five severity
+levels before training. Epoch 29 won on the fixed screen, then underwent full validation:
+
+| Model | Normal | 3x dark | 10x dark | Low-light noise | Robust mean |
+|---|---:|---:|---:|---:|---:|
+| Balanced seed 20260916 | 73.33% | 67.39% | **50.96%** | **43.55%** | **58.30%** |
+| Progressive epoch 29 | **73.55%** | **67.47%** | 50.73% | 43.34% | 58.25% |
+
+The longer run recovers nearly all normal-light performance and slightly improves moderate darkness,
+but is worse on the two primary low-light conditions. It also reduces 10x-dark hand IoU from 25.20%
+to 23.81%. The hypothesis that more epochs produce a better low-light model is therefore rejected
+on full validation; the screen-only improvement did not generalize.
+
+Progressive checkpoint SHA-256:
+`baa420bce9b4e3cb51898ab161882138def417a949a3c2a02ab4e6e3d40731a9`.
+
 Selected checkpoint SHA-256:
 `8875f4072a4f476d4beb178b33a3a3ff4448645bbf25a808222de3724bba10bb`.
 

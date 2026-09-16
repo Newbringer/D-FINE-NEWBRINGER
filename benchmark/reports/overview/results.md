@@ -58,6 +58,8 @@ The current head scores 73.61% normal-light mIoU and 49.59% at one-tenth brightn
 three-seed low-light training raises the latter consistently to 50.83–50.96% while normal mIoU is
 73.25–73.34%. Extra moderate and strong curriculum phases add no gain and retain epoch 0. Camera
 exposure/noise control therefore offers more likely product value than additional synthetic epochs.
+A forced 30-epoch progressive run also fails to improve the full-validation robust mean (58.25%
+versus 58.30% for the selected balanced model), despite appearing better on the smaller screen.
 
 ## Final answer
 
