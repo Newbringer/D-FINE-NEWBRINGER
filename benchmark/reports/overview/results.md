@@ -54,9 +54,10 @@ rejected because it does not preserve pose quality; ONNX Runtime CUDA is the qua
 
 ## Segmentation robustness
 
-The current head scores 73.61% normal-light mIoU and 49.59% at one-tenth brightness. Low-light
-training raises the latter to 50.63% but lowers normal mIoU to 73.36%. Camera exposure/noise control
-therefore offers more likely product value than this small model change.
+The current head scores 73.61% normal-light mIoU and 49.59% at one-tenth brightness. Corrected
+three-seed low-light training raises the latter consistently to 50.83–50.96% while normal mIoU is
+73.25–73.34%. Extra moderate and strong curriculum phases add no gain and retain epoch 0. Camera
+exposure/noise control therefore offers more likely product value than additional synthetic epochs.
 
 ## Final answer
 

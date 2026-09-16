@@ -20,3 +20,11 @@ Protected modules remained hash-identical. No production or TagTwo files were mo
 ## Decision
 
 Retain as a research candidate, not a production replacement. Validate on real arena captures next.
+
+## Corrected v2 follow-up
+
+The original experiment was superseded by a three-seed protocol with frozen-teacher consistency,
+realistic augmentation, fixed multi-condition validation and validation-safe BatchNorm handling.
+All seeds improve 10x-dark mIoU from 49.59% to 50.83–50.96% while keeping normal mIoU within the
+0.5-point gate. Additional moderate and strong curriculum phases both select epoch 0 and add no
+gain. Seed 20260916 epoch 6 is the retained research candidate.
