@@ -75,14 +75,18 @@ synthetic epochs.
 ## Video controls
 
 The selected balanced head was rendered against the current head on identical David and SogO
-frames in normal light and at exactly one-tenth brightness. Detection and pose were unchanged.
+frames in normal light and with camera-style low-light simulation. The simulation uses 0.1x linear
+scene illumination, partial exposure/gain recovery, shot/read noise, warm colour and motion blur;
+the scene remains visible. Detection and pose were unchanged.
 
 | Video | Current hits | Candidate hits |
 |---|---:|---:|
 | David, normal | 259 | 276 |
-| David, 10x dark | 244 | 254 |
+| David, camera low light | 263 | 279 |
 | SogO, normal | 315 | 316 |
-| SogO, 10x dark | 305 | 308 |
+| SogO, camera low light | 314 | 318 |
 
 These counts show changed decisions, not improved accuracy; the office videos have no hit/body-part
-ground truth. Visual files are under `ZKeepResults/segmentation_lowlight_v2/comparisons/`.
+ground truth. Visual files are under `ZKeepResults/segmentation_lowlight_v2/comparisons/`. The
+earlier uniform 0.1x sRGB visualization is deprecated because it produced an unrealistic black
+background and is excluded from the visual conclusion.
